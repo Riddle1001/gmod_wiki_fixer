@@ -238,7 +238,7 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
         write!(report, "<a class=\"stat\" href=\"{href}\"><span>{label}</span><strong>{count}</strong><small>{note}</small></a>").unwrap();
     }
     report.push_str("</div><nav aria-label=\"Report sections\"><a class=\"tab\" id=\"review-tab\" href=\"#fixes\">Fixes <span class=\"total-badge\">");
-    write!(report, "{actionable}</span></a><a class=\"tab\" id=\"coverage-tab\" href=\"#coverage\">Coverage & methodology</a><a class=\"tab\" href=\"#maintenance\">Source maintenance</a><a class=\"tab\" href=\"#opportunities\">Contribute</a><a class=\"tab\" href=\"#diagnostics\">Diagnostics</a><span class=\"nav-note\">Read-only report · commit-pinned evidence</span></nav>").unwrap();
+    write!(report, "{actionable}</span></a><a class=\"tab\" id=\"coverage-tab\" href=\"#coverage\">Coverage & methodology</a><a class=\"tab\" href=\"#maintenance\">Source maintenance</a><a class=\"tab\" href=\"#opportunities\">Contribute</a><a class=\"tab\" href=\"#diagnostics\">Diagnostics</a><span class=\"nav-note\">Read-only report · commit-pinned evidence</span><span class=\"nav-refresh\">Next refresh: <span id=\"nav-refresh-countdown\" aria-live=\"off\">--:--:--</span></span></nav>").unwrap();
     // Tables remain the canonical rendered record for no-JS reading, printing and
     // the HTML summary tool. JS enhances that record into a paged review list.
     // Revisit if another consumer needs a shared structured report format.

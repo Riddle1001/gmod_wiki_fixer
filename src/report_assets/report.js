@@ -82,6 +82,11 @@
     const minutes = Math.floor((secondsLeft % 3600) / 60);
     const seconds = secondsLeft % 60;
     refreshCountdown.textContent = `in ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    const navCountdown = $('nav-refresh-countdown');
+    if (navCountdown) {
+      navCountdown.textContent = refreshCountdown.textContent.slice(3);
+      navCountdown.title = localDateFormatter.format(nextRefresh);
+    }
   }
   updateRefreshClock();
   window.setInterval(updateRefreshClock, 1000);
@@ -479,7 +484,7 @@
   if (['priority', 'page', 'category'].includes(initial.get('sort'))) $('sort').value = initial.get('sort');
   const nav = document.querySelector('nav[aria-label="Report sections"]');
   for (const [key, title] of [['all','All findings'],['documentation-quality','Documentation quality']]) {
-    const link = create('a','tab',title); link.href = '#' + key; nav.append(link);
+    const link = create('a','tab',title); link.href = '#' + key; nav.insertBefore(link, nav.querySelector('.nav-refresh'));
   }
   route();
   // Only hide the fallback record after successful initialization.
