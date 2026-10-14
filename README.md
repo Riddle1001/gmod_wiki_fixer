@@ -1,6 +1,6 @@
-# Garryâ€™s Mod Wiki Audit
+# Garry's Mod Wiki Audit
 
-A Rust CLI that audits the Facepunch Garryâ€™s Mod wiki against the `Facepunch/garrysmod` Lua repository. It produces a standalone **HTML report** with section navigation, summary metrics, searchable findings, category filters, sortable tables, and GitHub evidence pinned to the checkoutâ€™s commit and exact source lines. Reports contain findings and evidence, with no proposed edits or diff blocks.
+A Rust CLI that audits the Facepunch Garry's Mod wiki against the `Facepunch/garrysmod` Lua repository. It produces a standalone **HTML report** with section navigation, summary metrics, searchable findings, category filters, sortable tables, and GitHub evidence pinned to the checkout's commit and exact source lines. Reports contain findings and evidence, with no proposed edits or diff blocks.
 
 ## Build and run
 
