@@ -29,6 +29,7 @@ pub enum CheckPageOutcome {
 }
 
 pub struct Analyzer {
+    pub quality: std::collections::BTreeMap<String, crate::documentation_quality::Rating>,
     pub repo: GmodRepo,
     pub wiki_client: WikiClient,
     pub realm_checked: usize,
@@ -51,8 +52,28 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
+    // Report excerpts use the same immutable texts as analysis and pinned evidence.
+    // Revisit if local, uncommitted audits become supported; those need distinct provenance.
+    pub fn report_excerpt(&self, evidence: &SourceEvidence) -> Option<serde_json::Value> {
+        if !self.pinned || evidence.start == 0 {
+            return None;
+        }
+        let text = self.source_texts.get(&evidence.file)?;
+        let lines: Vec<_> = text
+            .lines()
+            .skip(evidence.start - 1)
+            .take((evidence.end.saturating_sub(evidence.start) + 1).min(80))
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        Some(serde_json::json!({"start": evidence.start, "lines": lines,
+            "truncated": evidence.end.saturating_sub(evidence.start) >= 80}))
+    }
+
     pub fn new(repo: GmodRepo, wiki_client: WikiClient) -> Self {
         Self {
+            quality: Default::default(),
             repo,
             wiki_client,
             realm_checked: 0,
@@ -242,7 +263,8 @@ impl Analyzer {
         let matches: Vec<_> = matches
             .iter()
             .filter(|(_, def)| {
-                same_symbol_parent(def.parent.as_deref(), query_parent.as_deref())
+                !def.source_only
+                    && same_symbol_parent(def.parent.as_deref(), query_parent.as_deref())
                     && def.base_name == query_name
             })
             .collect();
@@ -447,6 +469,9 @@ impl Analyzer {
             return Ok(CheckPageOutcome::ExcludedSource { title: page.title });
         }
         let findings = self.audit_page_metadata(&page)?;
+        if let Some(rating) = crate::documentation_quality::rate(&page.address, &page.markup) {
+            self.quality.insert(page.address.clone(), rating);
+        }
         let mut discrepancies = Vec::new();
         let mut unresolved_sources = Vec::new();
 
@@ -560,12 +585,21 @@ impl Analyzer {
                                 &mut discrepancies,
                             );
                         } else {
+                            let candidates = index
+                                .definitions
+                                .iter()
+                                .filter(|def| def.base_name == func_name)
+                                .map(|def| {
+                                    format!(
+                                        "{} at {} ({})",
+                                        def.full_name, def.wiki_line_attr, def.realm
+                                    )
+                                })
+                                .collect::<Vec<_>>();
                             unresolved_sources.push(format!(
-                                "Could not match {}{}{} in {}. Same-name candidates in that file: {}. Parent ownership or ambiguity prevented a confident match; repository fallback found no matching public identity.",
+                                "Could not match {}{}{} in {}. Same-name definitions or alias assignments in that file: {}. No unambiguous ownership match was established; repository fallback found no matching public identity. A call or constant alone does not establish a function definition.",
                                 func_parent.unwrap_or("Global"), ":", func_name, tag.file_path,
-                                index.definitions.iter().filter(|def| def.base_name == func_name)
-                                    .map(|def| format!("{} at {} ({})", def.full_name, def.wiki_line_attr, def.realm))
-                                    .collect::<Vec<_>>().join(", ")
+                                if candidates.is_empty() { "none indexed".into() } else { candidates.join(", ") }
                             ));
                         }
                     }
@@ -642,6 +676,13 @@ impl Analyzer {
             .get(&key)
             .into_iter()
             .flatten()
+            .filter(|(file, def)| {
+                !def.source_only
+                    || files.iter().any(|path| {
+                        crate::git_repo::normalized_source_path(path).as_deref()
+                            == Some(file.as_str())
+                    })
+            })
             .filter(|(_, def)| {
                 same_symbol_parent(def.parent.as_deref(), parent.as_deref())
                     && def.base_name == name
@@ -765,7 +806,7 @@ impl Analyzer {
                         .tag
                         .attrs
                         .get("type")
-                        .is_none_or(|kind| kind != "hook")
+                        .is_none_or(|kind| !matches!(kind.as_str(), "hook" | "event"))
                     && DiffEngine::extract_realm(&function.inner).0 != Some(Realm::Menu)
             })
         {
@@ -882,7 +923,10 @@ impl Analyzer {
                     .collect();
                 findings.push(finding);
             }
-            if !candidates.is_empty() && candidates.iter().all(|(_, def)| def.contract.is_some()) {
+            if !crate::audit_checks::callback_contract(function)
+                && !candidates.is_empty()
+                && candidates.iter().all(|(_, def)| def.contract.is_some())
+            {
                 self.signature_comparisons += 1;
                 if candidates
                     .iter()
@@ -1050,8 +1094,9 @@ impl Analyzer {
             .values()
             .flatten()
             .filter(|(_, def)| {
-                !(is_metamethod(def.parent.as_deref(), &def.base_name)
-                    && def.full_name.contains(':'))
+                !def.source_only
+                    && !(is_metamethod(def.parent.as_deref(), &def.base_name)
+                        && def.full_name.contains(':'))
             })
             .filter_map(|(_, def)| match def.parent.as_deref() {
                 Some("ENT" | "SWEP") => None, // per-script prototypes, not named wiki classes

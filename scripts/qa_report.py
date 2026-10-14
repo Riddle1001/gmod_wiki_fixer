@@ -37,6 +37,7 @@ with sync_playwright() as p:
         page.emulate_media(media='print')
         print_check = page.evaluate("""() => ({
             recordVisible: getComputedStyle(document.getElementById('source-data')).display !== 'none',
+            qualityVisible: getComputedStyle(document.getElementById('quality-data')).display !== 'none',
             coverageVisible: getComputedStyle(document.getElementById('coverage')).display !== 'none',
             queueHidden: getComputedStyle(document.getElementById('review')).display === 'none'
         })""")
@@ -46,6 +47,11 @@ with sync_playwright() as p:
         page.screenshot(path=str(args.output / 'desktop.png'), full_page=True)
         page.set_viewport_size({'width':390,'height':844})
         page.screenshot(path=str(args.output / 'mobile.png'), full_page=True)
+        page.goto(f'http://127.0.0.1:{server.server_port}/{quote(args.report.name)}?quality=all#documentation-quality')
+        page.wait_for_function("document.documentElement.classList.contains('js')")
+        page.screenshot(path=str(args.output / 'quality-mobile.png'), full_page=True)
+        page.set_viewport_size({'width':1280,'height':900})
+        page.screenshot(path=str(args.output / 'quality-desktop.png'), full_page=True)
         result['browser_errors'] = errors
         (args.output / 'checks.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         print(json.dumps({'passed':result['passed'] and not errors,'log':str(args.output / 'checks.json')}))

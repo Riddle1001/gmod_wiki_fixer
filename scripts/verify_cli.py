@@ -80,6 +80,67 @@ RegisterMetaTable("PrivateMeta", Other)
     entity.mkdir(parents=True)
     (entity / "schedules.lua").write_text("function ENT:DoingEngineSchedule() return self.bDoingEngineSchedule end\n", encoding="utf-8")
     (entity / "ambiguous.lua").write_text("function ENT:Ambiguous() end\nfunction ENT:Ambiguous(x) end\n", encoding="utf-8")
+    (lua / "installed.lua").write_text('''local meta = FindMetaTable("Entity")
+function meta:InstallDataTable()
+    self.NetworkVar = function(ent, typename, index, name, other_data) end
+    self.UndocumentedInstanceCallback = function(ent) end
+    self.NoReceiver = function() return {} end
+    local self = {}
+    self.ShadowedCallback = function() end
+end
+function meta:ExplicitSelf(self)
+    self.ParameterCallback = function() end
+end
+function meta:First() self.AmbiguousInstalled = function(ent) end end
+function meta:Second() self.AmbiguousInstalled = function(ent, value) end end
+function Unknown:Install() self.UnknownCallback = function() end end
+local native = FindMetaTable("Player")
+native.GetName = native.Nick
+native.OtherAlias = native.EngineMethod
+native.ChainedAlias = native.OtherAlias
+native = {}
+native.ReboundAlias = native.Nick
+function GM:HookProbe(ignored) local observed = 1 end
+function OrdinaryReturnProbe() local observed = 1 end
+util.AnyNativeAlias = util.TraceLine
+local public_library = util
+public_library.AnotherNativeAlias = public_library.AnyNativeAlias
+''', encoding="utf-8")
+    player_class = repo / "garrysmod/gamemodes/base/gamemode/player_class"
+    player_class.mkdir(parents=True)
+    (player_class / "player_default.lua").write_text('''local PLAYER = {}
+function PLAYER:Spawn() end
+function PLAYER:UndocumentedHook() end
+player_manager.RegisterClass("player_default", PLAYER, nil)
+''', encoding="utf-8")
+    nextbot = repo / "garrysmod/gamemodes/base/entities/entities/base_nextbot"
+    nextbot.mkdir(parents=True)
+    (nextbot / "sv_nextbot.lua").write_text("function ENT:BehaveStart() end\n", encoding="utf-8")
+    modules = lua / "includes/modules"
+    modules.mkdir(parents=True)
+    (modules / "ai_task.lua").write_text('''local setmetatable = setmetatable
+module("ai_task")
+local Task = {}
+Task.__index = Task
+function Task:Start(npc) end
+function Task:UndocumentedFactoryMethod() end
+function New()
+    local object = {}
+    setmetatable(object, Task)
+    return object
+end
+''', encoding="utf-8")
+    (modules / "ai_schedule.lua").write_text('''local setmetatable = setmetatable
+module("ai_schedule")
+local Schedule = {}
+Schedule.__index = Schedule
+function Schedule:Init() end
+function New()
+    local object = {}
+    if UNKNOWN then setmetatable(object, Schedule) end
+    return object
+end
+''', encoding="utf-8")
     foreign = repo / "garrysmod/gamemodes/other/entities/entities/foreign"
     foreign.mkdir(parents=True)
     (foreign / "schedules.lua").write_text("function ENT:DoingEngineSchedule(wrong, owner) end\n", encoding="utf-8")
@@ -134,6 +195,28 @@ function META:__add(other) return self end
     }
 
     state["pages"].update({
+        "Player:GetName": page("Player:GetName", "<function name='GetName' parent='Player' type='classfunc'><file line='16'>lua/installed.lua</file><description>Returns the player name.</description><realm>Shared</realm><rets><ret type='string'/></rets></function>"),
+        "Player:OtherAlias": page("Player:OtherAlias", "<function name='OtherAlias' parent='Player' type='classfunc'><file line='17'>lua/installed.lua</file></function>"),
+        "Player:ChainedAlias": page("Player:ChainedAlias", "<function name='ChainedAlias' parent='Player' type='classfunc'><file line='18'>lua/installed.lua</file></function>"),
+        "Player:ReboundAlias": page("Player:ReboundAlias", "<function name='ReboundAlias' parent='Player' type='classfunc'><file line='20'>lua/installed.lua</file></function>"),
+        "GM:HookProbe": page("GM:HookProbe", "<function name='HookProbe' parent='GM' type='hook'><file line='21'>lua/installed.lua</file><description>Runs before drawing.</description><realm>Client</realm><args><arg name='unused' type='number'/><arg name='another' type='number'/></args><rets><ret type='boolean'>Return true to stop drawing.</ret></rets></function>"),
+        "Global.OrdinaryReturnProbe": page("Global.OrdinaryReturnProbe", "<function name='OrdinaryReturnProbe'><file line='22'>lua/installed.lua</file><rets><ret type='boolean'/></rets></function>"),
+        "util.AnyNativeAlias": page("util.AnyNativeAlias", "<function name='AnyNativeAlias' parent='util' type='libraryfunc'><file line='23'>lua/installed.lua</file></function>"),
+        "util.AnotherNativeAlias": page("util.AnotherNativeAlias", "<function name='AnotherNativeAlias' parent='util' type='libraryfunc'><file line='25'>lua/installed.lua</file></function>"),
+        "Entity:NetworkVar": page("Entity:NetworkVar", "<function name='NetworkVar' parent='Entity' type='classfunc'><file line='3'>lua/installed.lua</file><args><arg name='typename'/><arg name='index'/><arg name='name'/><arg name='other_data'/></args></function>"),
+        "Entity:NoReceiver": page("Entity:NoReceiver", "<function name='NoReceiver' parent='Entity' type='classfunc'><file line='5'>lua/installed.lua</file></function>"),
+        "Entity:ShadowedCallback": page("Entity:ShadowedCallback", "<function name='ShadowedCallback' parent='Entity'><file line='7'>lua/installed.lua</file></function>"),
+        "Entity:ParameterCallback": page("Entity:ParameterCallback", "<function name='ParameterCallback' parent='Entity'><file line='10'>lua/installed.lua</file></function>"),
+        "Entity:AmbiguousInstalled": page("Entity:AmbiguousInstalled", "<function name='AmbiguousInstalled' parent='Entity'><file line='12'>lua/installed.lua</file></function>"),
+        "Entity:UnknownCallback": page("Entity:UnknownCallback", "<function name='UnknownCallback' parent='Entity'><file line='14'>lua/installed.lua</file></function>"),
+        "Entity:ForeignInstalled": page("Entity:ForeignInstalled", "<function name='NetworkVar' parent='Entity'><file line='1'>lua/probe.lua</file></function>"),
+        "PLAYER:Spawn": page("PLAYER:Spawn", "<function name='Spawn' parent='PLAYER' type='hook'><file line='2'>gamemodes/base/gamemode/player_class/player_default.lua</file></function>"),
+        "Player:Spawn": page("Player:Spawn", "<function name='Spawn' parent='Player'><file line='2'>gamemodes/base/gamemode/player_class/player_default.lua</file></function>"),
+        "NEXTBOT:BehaveStart": page("NEXTBOT:BehaveStart", "<function name='BehaveStart' parent='NEXTBOT' type='hook'><file line='1'>gamemodes/base/entities/entities/base_nextbot/sv_nextbot.lua</file></function>"),
+        "NextBot:BehaveStart": page("NextBot:BehaveStart", "<function name='BehaveStart' parent='NextBot' type='hook'><file line='1'>gamemodes/base/entities/entities/base_nextbot/sv_nextbot.lua</file></function>"),
+        "NextBot:Foreign": page("NextBot:Foreign", "<function name='DoingEngineSchedule' parent='NextBot' type='hook'><file line='1'>gamemodes/base/entities/entities/base_ai/schedules.lua</file></function>"),
+        "Task:Start": page("Task:Start", "<function name='Start' parent='Task' type='classfunc'><file line='5'>lua/includes/modules/ai_task.lua</file><args><arg name='npc'/></args></function>"),
+        "Schedule:Init": page("Schedule:Init", "<function name='Init' parent='Schedule' type='classfunc'><file line='5'>lua/includes/modules/ai_schedule.lua</file></function>"),
         "ENTITY:DoingEngineSchedule": page("ENTITY:DoingEngineSchedule", "<function name='DoingEngineSchedule' parent='ENTITY' type='hook'><realm>Server</realm><file line='1'>gamemodes/base/entities/entities/base_ai/schedules.lua</file><rets><ret type='boolean'/></rets></function>"),
         "ENTITY:Ambiguous": page("ENTITY:Ambiguous", "<function name='Ambiguous' parent='ENTITY' type='hook'><file line='1'>gamemodes/base/entities/entities/base_ai/ambiguous.lua</file></function>"),
         "ENTITY:Foreign": page("ENTITY:Foreign", "<function name='DoingEngineSchedule' parent='ENTITY' type='hook'><file line='1'>lua/probe.lua</file></function>"),
@@ -193,8 +276,19 @@ function META:__add(other) return self end
             def handle_endtag(self, tag):
                 if tag == "tr" and self.current is not None: self.rows.append(self.current); self.pages.append((self.current[0], self.address)); self.current = None
         rows = FeedbackRows(); rows.feed(feedback_html)
+        installed_pages = ["Entity:NetworkVar", "Entity:NoReceiver", "Entity:ShadowedCallback", "Entity:ParameterCallback", "Entity:AmbiguousInstalled", "Entity:UnknownCallback", "Entity:ForeignInstalled", "PLAYER:Spawn", "Player:Spawn", "NEXTBOT:BehaveStart", "NextBot:BehaveStart", "NextBot:Foreign", "Task:Start", "Schedule:Init", "Player:GetName", "Player:OtherAlias", "Player:ChainedAlias", "Player:ReboundAlias", "GM:HookProbe", "Global.OrdinaryReturnProbe", "util.AnyNativeAlias", "util.AnotherNativeAlias"]
+        (root / "installed-pages.txt").write_text("\n".join(installed_pages), encoding="utf-8")
+        installed = cli("installed and registered method ownership", "check-list", "installed-pages.txt", "--output-report", "installed.html")
+        installed_rows = FeedbackRows(); installed_rows.feed((root / "installed.html").read_text(encoding="utf-8"))
+        check("installed methods and registered hook source tags resolve", installed.returncode == 0 and all(not any(key == "unresolved" and name == address for key, name in installed_rows.pages) for address in ["Entity:NetworkVar", "Entity:NoReceiver", "PLAYER:Spawn", "NEXTBOT:BehaveStart", "NextBot:BehaveStart", "Task:Start"]))
+        check("explicit ent receiver does not create a signature discrepancy", not any(key == "signature" and name == "Entity:NetworkVar" for key, name in installed_rows.pages))
+        check("shadowed, ambiguous, unknown and foreign owners stay unresolved", all(any(key == "unresolved" and name == address for key, name in installed_rows.pages) for address in ["Entity:ShadowedCallback", "Entity:ParameterCallback", "Entity:AmbiguousInstalled", "Entity:UnknownCallback", "Entity:ForeignInstalled", "Player:Spawn", "NextBot:Foreign", "Schedule:Init"]))
+        check("AST member aliases and alias chains resolve without special names", all(not any(key == "unresolved" and name == address for key, name in installed_rows.pages) for address in ["Player:GetName", "Player:OtherAlias", "Player:ChainedAlias", "util.AnyNativeAlias", "util.AnotherNativeAlias"]))
+        check("native aliases do not invent contracts; rebound receiver stays unresolved", not any(key in ["signature", "returns"] and name in ["Player:GetName", "Player:OtherAlias", "Player:ChainedAlias"] for key, name in installed_rows.pages) and any(key == "unresolved" and name == "Player:ReboundAlias" for key, name in installed_rows.pages))
+        check("hook defaults do not define callback contracts; ordinary returns still checked", not any(key in ["signature", "returns"] and name == "GM:HookProbe" for key, name in installed_rows.pages) and any(key == "returns" and name == "Global.OrdinaryReturnProbe" for key, name in installed_rows.pages))
+        check("short sufficient docs retain a perfect quality score", any(key == "documentation-quality" and "Player:GetName" in text and "100/100" in text for key, text in installed_rows.rows))
         check("page views come from current official-index contract", '"Global.NativeExampleProbe":"98765"' in feedback_html and 'Page views' in feedback_html)
-        check("tagged entity resolves without unrelated-owner signature", feedback.returncode == 0 and not any(name == "ENTITY:DoingEngineSchedule" for key, name in rows.pages))
+        check("tagged entity resolves without unrelated-owner signature", feedback.returncode == 0 and not any(name == "ENTITY:DoingEngineSchedule" and key in ["unresolved", "signature", "returns", "wrong-files", "line-ranges"] for key, name in rows.pages))
         check("ambiguous and foreign entity owners remain diagnostics", all(any(key == "unresolved" and name in text for key, text in rows.rows) for name in ["ENTITY:Ambiguous", "ENTITY:Foreign"]))
         check("tagged weapon resolves", not any("WEAPON:WeaponProbe" in text and key == "unresolved" for key, text in rows.rows))
         check("guarded and positively loaded menu definitions excluded", not any("MenuGuardOnly" in text or "LoadedMenuOnly" in text for key, text in rows.rows))
@@ -205,6 +299,7 @@ function META:__add(other) return self end
         policy = (root / "policy.html").read_text(encoding="utf-8")
         parsed_policy = FeedbackRows(); parsed_policy.feed(policy)
         missing_text = " ".join(text for key, text in parsed_policy.rows if key == "missing")
+        check("instance callbacks, player hooks and factory methods are not missing-page suggestions", all(name not in missing_text for name in ["UndocumentedInstanceCallback", "UndocumentedHook", "UndocumentedFactoryMethod", "ShadowedCallback", "ParameterCallback", "UnknownCallback", "AmbiguousInstalled"]))
         check("menu-only and actual metamethod pages not discovered", all(name not in missing_text for name in ["MenuPathOnly", "MenuGuardOnly", "LoadedMenuOnly", "FixtureClass:__tostring", "FixtureClass:__add"]))
         check("client-menu and ordinary double-underscore exports retained", all(name in missing_text for name in ["SharedMenuProbe", "Global.__call", "FixtureLibrary.__helper", "FixtureClass:Ordinary"]))
         (root / "meta-pages.txt").write_text("Color:Copy\n", encoding="utf-8")

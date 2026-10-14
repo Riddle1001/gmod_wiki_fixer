@@ -6,6 +6,7 @@ mod analyzer;
 mod ast_indexer;
 mod audit_checks;
 mod diff_engine;
+mod documentation_quality;
 mod function_contract;
 mod git_repo;
 mod load_graph;
@@ -373,6 +374,8 @@ fn run_batch_check(
     report_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut data = report::ReportData {
+        snippets: Default::default(),
+        quality: Vec::new(),
         page_views: Default::default(),
         panel_names: analyzer.panel_names()?,
         metrics: Vec::new(),
@@ -480,6 +483,7 @@ fn run_batch_check(
     // check-list fetches its index lazily on the first page; capture views after
     // checking so every batch command uses the same fresh-index priority data.
     data.page_views = analyzer.wiki_client.page_views.clone();
+    data.quality = analyzer.quality.values().cloned().collect();
     let review_pages = data
         .findings
         .iter()
@@ -629,6 +633,24 @@ fn run_batch_check(
         );
     }
     if let Some(path) = report_path {
+        for evidence in data
+            .findings
+            .iter()
+            .flat_map(|f| f.sources.iter())
+            .chain(
+                data.source_issues
+                    .iter()
+                    .filter_map(|f| f.evidence.as_ref()),
+            )
+            .chain(data.missing_pages.iter().filter_map(|(_, e)| e.as_ref()))
+        {
+            if let Some(excerpt) = analyzer.report_excerpt(evidence) {
+                data.snippets.insert(
+                    snapshot.source_url(&evidence.file, evidence.start, evidence.end),
+                    excerpt,
+                );
+            }
+        }
         fs::write(path, report::render(snapshot, &data))?;
         println!("Generated audit tables and evidence: {}", path.display());
     }

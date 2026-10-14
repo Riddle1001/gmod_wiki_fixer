@@ -8,7 +8,7 @@
   const records = [...document.querySelectorAll('#source-data tr[data-category]')];
   const nameIn = row => row.cells[row.cells.length === 5 || row.cells.length === 4 ? 1 : 0].querySelector('a')?.textContent;
   const pageCount = rows => new Set(rows.map(nameIn)).size;
-  const cards = () => [...document.querySelectorAll('.finding-card')];
+  const cards = () => [...document.querySelectorAll('.page-rows')];
   check('capture canary', true, 'Browser assertions live; first-pass, no retries');
   check('default view is fixes', $('queue-title').textContent === 'Fixes');
   check('audit completion timestamp shown', $('audit-completed')?.dateTime && !$('audit-completed').textContent.includes('Unix'));
@@ -19,7 +19,7 @@
   refresh.querySelector('summary').click(); await wait();
   check('progressive enhancement initialized', document.documentElement.classList.contains('js'));
   const views = {
-    fixes: ['dead-files', 'realm-mismatches', 'malformed-source', 'identity', 'signature', 'returns', 'broken-link'],
+    fixes: ['dead-files', 'realm-mismatches', 'malformed-source', 'identity', 'signature', 'returns', 'broken-link', 'doc-critical'],
     maintenance: ['line-ranges', 'wrong-files', 'missing-source', 'missing-realms'],
     opportunities: ['missing', 'missing-controls', 'examples'],
     diagnostics: ['unresolved', 'failed', 'unverified-link', 'load-realm']
@@ -38,19 +38,63 @@
         return new Intl.Collator(undefined, {numeric:true, sensitivity:'base'}).compare(a,b);
       }).slice(0,50);
       check('priority uses page views highest first', JSON.stringify(actual) === JSON.stringify(expectedOrder));
-      check('page views shown on cards', cards().every(card => card.querySelector('.finding-preview').textContent.startsWith('Page views:')));
+      check('page views shown on cards', cards().every(card => card.querySelector('.views')));
     }
-    check('every grouped finding preserved: ' + key, cards().reduce((sum, card) => sum + card.querySelectorAll('.finding-body').length, 0) === expected.filter(row => cards().some(card => card.dataset.entry === nameIn(row))).length);
+    check('every grouped finding preserved: ' + key, cards().reduce((sum, card) => sum + card.querySelectorAll('.finding-row').length, 0) === expected.filter(row => cards().some(card => card.dataset.entry === nameIn(row))).length);
   }
   await route('all');
   check('desktop does not overflow', document.documentElement.scrollWidth <= innerWidth);
+  const qualityRows = [...document.querySelectorAll('#quality-data tr[data-category]')];
+  await route('documentation-quality');
+  check('quality is separate with transparent controls', !$('quality-controls').hidden && $('quality-summary').textContent.includes('rated pages') && $('quality-controls').textContent.includes('log(1 + views)'));
+  $('quality-band').value = 'all'; $('quality-band').dispatchEvent(new Event('input')); await wait();
+  check('all rated pages are accessible', cards().length === Math.min(50, qualityRows.length));
+  const maxLog = qualityRows.reduce((max, row) => Math.max(max, Math.log1p(Number(pageViews[nameIn(row)] || 0))), 0);
+  for (const [need, viewsWeight] of [[100,0],[0,100],[60,40],[0,0]]) {
+    $('need-weight').value = need; $('views-weight').value = viewsWeight;
+    $('views-weight').dispatchEvent(new Event('input')); await wait();
+    const n = need + viewsWeight ? need : 60, v = need + viewsWeight ? viewsWeight : 40;
+    const priority = row => (n * (100 - Number(row.dataset.quality)) + v * (maxLog ? 100 * Math.log1p(Number(pageViews[nameIn(row)] || 0)) / maxLog : 0)) / (n+v);
+    const expected = [...qualityRows].sort((a,b) => priority(b)-priority(a) || new Intl.Collator(undefined,{numeric:true,sensitivity:'base'}).compare(nameIn(a),nameIn(b))).slice(0,50).map(nameIn);
+    check(`quality priority ${need}/${viewsWeight}`, JSON.stringify(cards().map(card => card.dataset.entry)) === JSON.stringify(expected));
+  }
+  if (cards().length) {
+    cards()[0].querySelector('.finding-row').click();
+    check('quality card explains all applicable points', $('finding-detail').querySelector('.quality-breakdown') && $('finding-detail').textContent.includes('applicable points'));
+  }
+  for (const band of ['poor','partial','good','improve']) {
+    $('quality-band').value = band; $('quality-band').dispatchEvent(new Event('input')); await wait();
+    check('quality band ' + band, cards().every(card => {
+      const score = Number(qualityRows.find(row => nameIn(row) === card.dataset.entry).dataset.quality);
+      return band === 'poor' ? score < 50 : band === 'partial' ? score >= 50 && score < 80 : band === 'good' ? score >= 80 : score < 100;
+    }));
+  }
+  $('need-weight').value = 70; $('views-weight').value = 30; $('views-weight').dispatchEvent(new Event('input')); await wait();
+  check('quality weights shareable in URL', new URL(location.href).searchParams.get('need') === '70' && new URL(location.href).searchParams.get('views') === '30');
+  const qualityFrame = document.createElement('iframe');
+  qualityFrame.style.cssText = 'position:fixed;left:-2000px;width:390px;height:844px';
+  const qualityLoaded = new Promise(resolve => qualityFrame.onload = resolve);
+  qualityFrame.src = location.href; document.body.append(qualityFrame); await qualityLoaded;
+  const qualityDoc = qualityFrame.contentDocument;
+  check('quality shared URL restores weights and band', qualityDoc.getElementById('need-weight').value === '70' && qualityDoc.getElementById('views-weight').value === '30' && qualityDoc.getElementById('quality-band').value === 'improve' && !qualityDoc.getElementById('quality-controls').hidden);
+  check('quality mobile controls do not overflow', qualityDoc.documentElement.scrollWidth <= qualityFrame.contentWindow.innerWidth);
+  qualityFrame.remove();
+  $('reset').click(); await wait();
+  await route('all');
+  check('quality ratings do not flood All findings', cards().every(card => card.dataset.category !== 'documentation-quality'));
   if (records.length) {
-    const summary = document.querySelector('.finding-summary'); summary.click(); await wait();
-    check('page opens in place with evidence and wiki action', summary.parentElement.open && summary.parentElement.querySelector('.wiki-action'));
-    $('expand-all').click(); await wait();
-    check('expand page', cards().every(card => card.open));
-    $('expand-all').click(); await wait();
-    check('collapse page', cards().every(card => !card.open));
+    const row = document.querySelector('.finding-row'); row.click(); await wait();
+    check('selection shows evidence and edit action', row.getAttribute('aria-current') === 'true' && $('finding-detail').querySelector('.btn-primary')?.href.endsWith('~edit'));
+    check('selection has shareable URL', new URL(location.href).searchParams.has('finding'));
+    check('confidence on every finding row', [...document.querySelectorAll('.finding-row')].every(row => row.querySelector('.badge')));
+    const review = $('finding-detail').querySelector('.review-button'); review.click(); await wait();
+    check('review toggles visibly and persists', $('finding-detail').querySelector('.review-button').getAttribute('aria-pressed') === 'true' && JSON.parse(localStorage.getItem('gmod-reviewed-v1')).includes(row.dataset.id));
+    $('finding-detail').querySelector('.review-button').click();
+    const currentId = document.querySelector('.finding-row[aria-current]')?.dataset.id;
+    document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'j',bubbles:true})); await wait();
+    check('j selects next finding', document.querySelectorAll('.finding-row').length < 2 || document.querySelector('.finding-row[aria-current]')?.dataset.id !== currentId);
+    document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'k',bubbles:true})); await wait();
+    check('k returns to finding', document.querySelector('.finding-row[aria-current]')?.dataset.id === currentId);
     if (pageCount(records) > 50) {
       const first = cards()[0].dataset.entry; $('next').click(); await wait();
       check('next page changes records', $('page-position').textContent.includes('Page 2') && cards()[0].dataset.entry !== first);
@@ -58,7 +102,7 @@
       check('previous restores records', cards()[0].dataset.entry === first);
     }
     $('sort').value = 'page'; $('sort').dispatchEvent(new Event('change')); await wait();
-    const names = cards().map(card => card.querySelector('h3').textContent);
+    const names = cards().map(card => card.querySelector('.sym').textContent);
     const collator = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
     check('page sorting', names.every((name, i) => i === 0 || collator.compare(names[i-1], name) <= 0));
     $('search').value = 'never_matching_qa_918362'; $('search').dispatchEvent(new Event('input')); await wait();
@@ -89,7 +133,7 @@
   doc.getElementById('reset').click(); await wait();
   const picker = doc.getElementById('category-picker'); picker.value = 'maintenance'; picker.dispatchEvent(new mobile.Event('change')); await wait();
   check('mobile source maintenance navigation', doc.getElementById('queue-title').textContent === 'Source maintenance');
-  if (doc.querySelector('.finding-summary')) { doc.querySelector('.finding-summary').click(); await wait(); check('mobile expansion does not overflow', doc.documentElement.scrollWidth <= mobile.innerWidth); }
+  if (doc.querySelector('.finding-row')) { doc.querySelector('.finding-row').click(); await wait(); check('mobile opens full screen detail', mobile.getComputedStyle(doc.getElementById('finding-detail')).position === 'fixed'); doc.querySelector('.detail-back').click(); check('mobile back returns to queue', !doc.getElementById('finding-detail').classList.contains('mobile-open')); }
   frame.remove();
   $('reset').click(); await wait();
   await route('coverage');
@@ -99,7 +143,7 @@
   const raw = await (await fetch(location.href.split('#')[0])).text();
   const fallbackLoaded = new Promise(resolve => fallback.onload = resolve);
   fallback.srcdoc = raw.replace(/<script>[\s\S]*?<\/script>/g, ''); document.body.append(fallback); await fallbackLoaded;
-  check('no-JS retains complete record', fallback.contentDocument.querySelectorAll('tr[data-category]').length === records.length && fallback.contentWindow.getComputedStyle(fallback.contentDocument.getElementById('source-data')).display !== 'none');
+  check('no-JS retains complete record', fallback.contentDocument.querySelectorAll('tr[data-category]').length === records.length + qualityRows.length && fallback.contentWindow.getComputedStyle(fallback.contentDocument.getElementById('source-data')).display !== 'none' && fallback.contentWindow.getComputedStyle(fallback.contentDocument.getElementById('quality-data')).display !== 'none');
   fallback.remove();
   check('no external assets', document.querySelectorAll('script[src],link[rel=stylesheet]').length === 0);
   check('untrusted markup remains text', document.querySelectorAll('.finding-card script,.finding-card img').length === 0);

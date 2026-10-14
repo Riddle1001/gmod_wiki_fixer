@@ -54,7 +54,15 @@ impl SourceEvidence {
             file: file.into(),
             start: def.start_line,
             end: def.end_line,
-            label: def.full_name.clone(),
+            label: def.alias_target.as_ref().map_or_else(
+                || def.full_name.clone(),
+                |target| {
+                    format!(
+                        "{} aliases {} (assignment only; target contract unknown)",
+                        def.full_name, target
+                    )
+                },
+            ),
         }
     }
 }
@@ -253,6 +261,12 @@ pub fn contract_findings(
     function: &Block,
     candidates: &[(String, SymbolDefinition)],
 ) -> Vec<AuditFinding> {
+    // Hook/event declarations describe the callback contract, not the default
+    // implementation's consumed arguments or returns. hook.Call can stop at an
+    // earlier callback. Revisit only with dispatcher/caller contract evidence.
+    if callback_contract(function) {
+        return Vec::new();
+    }
     if candidates.is_empty() || candidates.iter().any(|(_, def)| def.contract.is_none()) {
         return Vec::new();
     }
@@ -368,6 +382,14 @@ pub fn contract_findings(
         }
     }
     findings
+}
+
+pub fn callback_contract(function: &Block) -> bool {
+    function
+        .tag
+        .attrs
+        .get("type")
+        .is_some_and(|kind| matches!(kind.as_str(), "hook" | "event"))
 }
 
 #[cfg(test)]

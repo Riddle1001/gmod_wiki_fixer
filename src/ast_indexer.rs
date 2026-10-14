@@ -142,6 +142,9 @@ impl LineIndex {
 /// A parsed Lua symbol definition with its precise line range in the repository file.
 #[derive(Debug, Clone)]
 pub struct SymbolDefinition {
+    pub alias_target: Option<String>,
+    /// Ownership evidence for existing documentation, not a missing-page candidate.
+    pub source_only: bool,
     pub full_name: String,
     pub parent: Option<String>,
     pub base_name: String,
@@ -327,9 +330,10 @@ impl FileIndex {
             .collect();
         // A prototype alias must identify one implementation in the tagged file.
         if matches.len() > 1
-            && matches
-                .iter()
-                .any(|def| !same_symbol_parent(def.parent.as_deref(), query_parent.as_deref()))
+            && matches.iter().any(|def| {
+                def.source_only
+                    || !same_symbol_parent(def.parent.as_deref(), query_parent.as_deref())
+            })
         {
             return None;
         }
@@ -371,6 +375,9 @@ pub fn contextual_script_parent(path: &str, source: Option<&str>, wiki: Option<&
     let path = path.replace('\\', "/");
     (source == Some("ENT") && wiki == Some("ENTITY") && path.contains("/entities/"))
         || (source == Some("SWEP") && wiki == Some("WEAPON") && path.contains("/weapons/"))
+        || (source == Some("ENT")
+            && matches!(wiki, Some("NEXTBOT" | "NextBot"))
+            && path == "gamemodes/base/entities/entities/base_nextbot/sv_nextbot.lua")
 }
 
 pub fn same_symbol_parent(left: Option<&str>, right: Option<&str>) -> bool {

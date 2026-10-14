@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 enum Value {
     Unknown,
     Table(usize),
+    Instance(usize),
+    MemberReference(usize, String),
     Function(Site),
     // A reference to a global does not prove that its value is a function.
     GlobalPath(String),
@@ -17,6 +19,7 @@ enum Value {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Site {
+    alias_target: Option<String>,
     start: usize,
     end: usize,
     realm: Realm,
@@ -30,6 +33,9 @@ struct Table {
     members: HashMap<String, Value>,
     exports: BTreeMap<String, bool>, // name -> class (colon) or library (dot)
     functions: Vec<(String, Site, usize)>,
+    installed_functions: Vec<(String, Site, usize)>,
+    source_only: bool,
+    prototype: Option<usize>,
     export_guards: HashMap<String, usize>,
 }
 
@@ -42,6 +48,8 @@ struct Indexer {
     base_realm: Realm,
     class_bases: HashMap<String, String>,
     control_lines: HashMap<String, (usize, usize)>,
+    factory_class: Option<String>,
+    path: String,
 }
 
 pub fn index_file(path: &str, source: &str) -> FileIndex {
@@ -55,6 +63,8 @@ pub fn index_file(path: &str, source: &str) -> FileIndex {
         base_realm: FileIndex::detect_base_file_realm(path, source),
         class_bases: HashMap::new(),
         control_lines: HashMap::new(),
+        factory_class: None,
+        path: path.replace('\\', "/"),
     };
     indexer.tables[0].exports.insert("_G".into(), false);
     // Some VGUI loaders provide a per-file PANEL prototype. It becomes a public
@@ -124,7 +134,11 @@ pub fn index_file(path: &str, source: &str) -> FileIndex {
             .members
             .insert(name.into(), Value::Table(id));
     }
-    for name in ["vgui.Register", "derma.DefineControl"] {
+    for name in [
+        "vgui.Register",
+        "derma.DefineControl",
+        "player_manager.RegisterClass",
+    ] {
         let (parent, member) = name.split_once('.').unwrap();
         let id = indexer.namespaces[parent];
         indexer.tables[id]
@@ -179,7 +193,17 @@ pub fn index_file(path: &str, source: &str) -> FileIndex {
     let mut seen = HashSet::new();
     for table in &indexer.tables {
         for (namespace, class) in &table.exports {
-            for (name, site, definition_offset) in &table.functions {
+            for (name, site, definition_offset, installed) in table
+                .functions
+                .iter()
+                .map(|(name, site, offset)| (name, site, offset, false))
+                .chain(
+                    table
+                        .installed_functions
+                        .iter()
+                        .map(|(name, site, offset)| (name, site, offset, true)),
+                )
+            {
                 let parent = (namespace != "_G").then(|| namespace.clone());
                 let full_name = match &parent {
                     Some(parent) => format!("{}{}{}", parent, if *class { ':' } else { '.' }, name),
@@ -194,6 +218,8 @@ pub fn index_file(path: &str, source: &str) -> FileIndex {
                     continue;
                 }
                 definitions.push(SymbolDefinition {
+                    alias_target: site.alias_target.clone(),
+                    source_only: table.source_only || installed,
                     full_name,
                     parent,
                     base_name: name.clone(),
@@ -230,6 +256,7 @@ impl Indexer {
             .line_index
             .get_line_range(range.start().into(), range.end().into());
         Site {
+            alias_target: None,
             start,
             end,
             realm: FileIndex::determine_node_realm(node, self.base_realm, |name| {
@@ -283,6 +310,15 @@ impl Indexer {
     fn table_value(&mut self, value: Value) -> Option<usize> {
         match value {
             Value::Table(id) => Some(id),
+            Value::MemberReference(owner, member) => {
+                let parent = self.tables[owner]
+                    .exports
+                    .iter()
+                    .find(|(_, class)| !**class)?
+                    .0
+                    .clone();
+                Some(self.namespace(&format!("{parent}.{member}")))
+            }
             Value::GlobalPath(path) => Some(self.namespace(&path)),
             _ => None,
         }
@@ -295,6 +331,9 @@ impl Indexer {
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| {
+                    if id != 0 && !self.tables[id].exports.is_empty() {
+                        return Value::MemberReference(id, name.into());
+                    }
                     self.tables[id]
                         .exports
                         .keys()
@@ -323,16 +362,43 @@ impl Indexer {
     }
 
     fn set_member(&mut self, id: usize, name: &str, value: Value, node: &LuaSyntaxNode) {
+        // A same-owner member copy proves an alias assignment, not that an
+        // unknown engine value is callable. Use it only for existing source tags.
+        // Never infer native signatures or discover arbitrary copied data fields.
+        let alias =
+            match &value {
+                Value::MemberReference(owner, member) => self.tables[*owner]
+                    .exports
+                    .iter()
+                    .next()
+                    .map(|(parent, class)| {
+                        format!("{parent}{}{member}", if *class { ':' } else { '.' })
+                    }),
+                _ => None,
+            };
         let value = match value {
+            Value::MemberReference(_, _) if alias.is_some() => {
+                let mut site = self.site(node);
+                site.alias_target = alias.clone();
+                site.contract = None;
+                Value::Function(site)
+            }
+            Value::Function(previous) if previous.alias_target.is_some() => {
+                let mut site = self.site(node);
+                site.alias_target = previous.alias_target;
+                site.contract = None;
+                Value::Function(site)
+            }
             Value::NativeFunction(_) => Value::Function(self.site(node)),
             value => value,
         };
         if let Value::Function(site) = &value {
-            self.tables[id].functions.push((
-                name.into(),
-                site.clone(),
-                node.text_range().start().into(),
-            ));
+            let functions = if site.alias_target.is_some() {
+                &mut self.tables[id].installed_functions
+            } else {
+                &mut self.tables[id].functions
+            };
+            functions.push((name.into(), site.clone(), node.text_range().start().into()));
         }
         if let Value::Table(child) = &value {
             let class_alias = self.tables[*child].exports.values().any(|class| *class);
@@ -364,6 +430,9 @@ impl Indexer {
         self.namespaces.insert(name.into(), id);
         if let Some(guard) = guard {
             self.tables[id].export_guards.insert(name.into(), guard);
+        }
+        if self.tables[id].source_only {
+            return;
         }
         let children: Vec<_> = self.tables[id]
             .members
@@ -402,6 +471,29 @@ impl Indexer {
                     index.get_index_key().and_then(static_key),
                 ) {
                     let receiver = self.expr(&prefix);
+                    if let Value::Instance(id) = receiver {
+                        if let Value::Function(mut site) = value {
+                            if let Some(contract) = &mut site.contract {
+                                // Installed closures receive the instance explicitly.
+                                // Unknown conventions cannot support a signature claim.
+                                if matches!(
+                                    contract.parameters.first().map(String::as_str),
+                                    Some("self" | "ent")
+                                ) {
+                                    contract.parameters.remove(0);
+                                    contract.implicit_self = true;
+                                } else if !contract.parameters.is_empty() {
+                                    site.contract = None;
+                                }
+                            }
+                            self.tables[id].installed_functions.push((
+                                key,
+                                site,
+                                node.text_range().start().into(),
+                            ));
+                        }
+                        return;
+                    }
                     if let Some(id) = self.table_value(receiver) {
                         self.set_member(id, &key, value, node);
                     }
@@ -430,7 +522,7 @@ impl Indexer {
                 .unwrap_or(Value::Unknown),
             LuaExpr::ClosureExpr(closure) => {
                 let value = Value::Function(self.site(closure.syntax()));
-                self.function_body(closure, false);
+                self.function_body(closure, None, None);
                 value
             }
             LuaExpr::TableExpr(table) => {
@@ -486,6 +578,12 @@ impl Indexer {
         let values: Vec<_> = args.iter().map(|expr| self.expr(expr)).collect();
         if let Value::NativeFunction(name) = &target {
             if name == "setmetatable" {
+                if let Some(Value::Table(object)) = values.first() {
+                    self.tables[*object].prototype = match values.get(1) {
+                        Some(Value::Table(prototype)) => Some(*prototype),
+                        _ => None,
+                    };
+                }
                 return values.first().cloned().unwrap_or(Value::Unknown);
             }
             if name == "table.Copy" {
@@ -503,6 +601,24 @@ impl Indexer {
             return Value::Unknown;
         };
         match target.as_str() {
+            "player_manager.RegisterClass" => {
+                // PLAYER is a player-class hook table, never the Player engine metatable.
+                // Keep it source-only and require the base class's actual registration.
+                if self.path == "gamemodes/base/gamemode/player_class/player_default.lua"
+                    && args.first().and_then(string_literal).as_deref() == Some("player_default")
+                {
+                    if let Some(Value::Table(id)) = values.get(1) {
+                        let id = *id;
+                        self.tables[id].source_only = true;
+                        self.export_table(
+                            id,
+                            "PLAYER",
+                            true,
+                            Some(call.syntax().text_range().start().into()),
+                        );
+                    }
+                }
+            }
             "RegisterMetaTable" => {
                 if let (Some(name), Some(Value::Table(id))) =
                     (args.first().and_then(string_literal), values.get(1))
@@ -586,21 +702,68 @@ impl Indexer {
         Value::Unknown
     }
 
-    fn function_body(&mut self, closure: &LuaClosureExpr, method: bool) {
+    // These names are documented factory contracts, not inferred local class names.
+    // Revisit if factory renaming or cross-file prototypes must be supported; that
+    // needs public return-type evidence rather than exposing every local metatable.
+    fn factory_identity(&mut self, name: &LuaVarExpr) -> Option<String> {
+        let identity = match name {
+            LuaVarExpr::NameExpr(name) => {
+                if self
+                    .scopes
+                    .iter()
+                    .any(|scope| scope.contains_key(&name.get_text()))
+                {
+                    return None;
+                }
+                let parent = self.tables[self.environment].exports.keys().next()?;
+                format!("{}.{}", parent, name.get_text())
+            }
+            LuaVarExpr::IndexExpr(index) => {
+                let prefix = index.get_prefix_expr()?;
+                let Value::Table(id) = self.expr(&prefix) else {
+                    return None;
+                };
+                let parent = self.tables[id].exports.keys().next()?;
+                format!("{}.{}", parent, index.get_index_key().and_then(static_key)?)
+            }
+        };
+        match (self.path.as_str(), identity.as_str()) {
+            ("lua/includes/modules/ai_task.lua", "ai_task.New") => Some("Task".into()),
+            ("lua/includes/modules/ai_schedule.lua", "ai_schedule.New") => Some("Schedule".into()),
+            ("lua/includes/extensions/util.lua", "util.Stack") => Some("Stack".into()),
+            _ => None,
+        }
+    }
+
+    fn function_body(
+        &mut self,
+        closure: &LuaClosureExpr,
+        receiver: Option<Value>,
+        factory: Option<String>,
+    ) {
         // Function bodies do not execute at declaration time. Preserve outer bindings.
         let saved_scopes = self.scopes.clone();
         let saved_environment = self.environment;
+        let saved_factory = self.factory_class.take();
+        self.factory_class = factory;
+        let saved_prototypes: Vec<_> = self.tables.iter().map(|table| table.prototype).collect();
         let saved_members: Vec<_> = self
             .tables
             .iter()
             .map(|table| table.members.clone())
             .collect();
         self.scopes.push(HashMap::new());
-        if method {
+        if let Some(receiver) = receiver {
+            let instance = match receiver {
+                Value::Table(id) if self.tables[id].exports.values().any(|class| *class) => {
+                    Value::Instance(id)
+                }
+                _ => Value::Unknown,
+            };
             self.scopes
                 .last_mut()
                 .unwrap()
-                .insert("self".into(), Value::Unknown);
+                .insert("self".into(), instance);
         }
         if let Some(params) = closure.get_params_list() {
             for param in params.get_params() {
@@ -615,8 +778,12 @@ impl Indexer {
         }
         self.scopes = saved_scopes;
         self.environment = saved_environment;
+        self.factory_class = saved_factory;
         for (table, members) in self.tables.iter_mut().zip(saved_members) {
             table.members = members;
+        }
+        for (table, prototype) in self.tables.iter_mut().zip(saved_prototypes) {
+            table.prototype = prototype;
         }
     }
 
@@ -665,18 +832,25 @@ impl Indexer {
                             .last_mut()
                             .unwrap()
                             .insert(name.get_text(), value);
-                        self.function_body(&closure, false);
+                        self.function_body(&closure, None, None);
                     }
                 }
                 LuaStat::FuncStat(func) => {
                     if let (Some(name), Some(closure)) = (func.get_func_name(), func.get_closure())
                     {
+                        let receiver = match &name {
+                            LuaVarExpr::IndexExpr(index) if name.get_text().contains(':') => {
+                                index.get_prefix_expr().map(|expr| self.expr(&expr))
+                            }
+                            _ => None,
+                        };
+                        let factory = self.factory_identity(&name);
                         self.assign(
                             &name,
                             Value::Function(self.site(func.syntax())),
                             func.syntax(),
                         );
-                        self.function_body(&closure, name.get_text().contains(':'));
+                        self.function_body(&closure, receiver, factory);
                     }
                 }
                 LuaStat::AssignStat(assign) => {
@@ -702,9 +876,30 @@ impl Indexer {
                         self.call(&call);
                     }
                 }
+                LuaStat::ReturnStat(stat) => {
+                    let values: Vec<_> =
+                        stat.get_expr_list().map(|expr| self.expr(&expr)).collect();
+                    if let (Some(class), [Value::Table(object)]) =
+                        (self.factory_class.clone(), values.as_slice())
+                    {
+                        if let Some(prototype) = self.tables[*object].prototype {
+                            // A documented factory must return an object whose __index is
+                            // this exact prototype. Local spelling alone proves no API.
+                            if self.tables[prototype].members.get("__index")
+                                == Some(&Value::Table(prototype))
+                            {
+                                self.tables[prototype].source_only = true;
+                                self.export_table(prototype, &class, true, None);
+                            }
+                        }
+                    }
+                }
                 LuaStat::IfStat(stat) => {
                     let saved_scopes = self.scopes.clone();
                     let saved_environment = self.environment;
+                    let saved_prototypes: Vec<_> =
+                        self.tables.iter().map(|table| table.prototype).collect();
+                    let mut changed_prototypes = HashSet::new();
                     let saved_members: Vec<_> = self
                         .tables
                         .iter()
@@ -717,6 +912,13 @@ impl Indexer {
                     if let Some(block) = stat.get_block() {
                         self.block(&block, true);
                     }
+                    for (id, (table, prototype)) in
+                        self.tables.iter().zip(&saved_prototypes).enumerate()
+                    {
+                        if table.prototype != *prototype {
+                            changed_prototypes.insert(id);
+                        }
+                    }
                     branches.push(self.scopes.clone());
                     let clauses: Vec<_> = stat.get_all_clause().collect();
                     for clause in clauses {
@@ -725,7 +927,17 @@ impl Indexer {
                         for (table, members) in self.tables.iter_mut().zip(&saved_members) {
                             table.members = members.clone();
                         }
+                        for (table, prototype) in self.tables.iter_mut().zip(&saved_prototypes) {
+                            table.prototype = *prototype;
+                        }
                         self.children(clause.syntax());
+                        for (id, (table, prototype)) in
+                            self.tables.iter().zip(&saved_prototypes).enumerate()
+                        {
+                            if table.prototype != *prototype {
+                                changed_prototypes.insert(id);
+                            }
+                        }
                         branches.push(self.scopes.clone());
                     }
                     if stat.get_else_clause().is_none() {
@@ -752,8 +964,19 @@ impl Indexer {
                     for (table, members) in self.tables.iter_mut().zip(saved_members) {
                         table.members = members;
                     }
+                    for (id, (table, prototype)) in
+                        self.tables.iter_mut().zip(saved_prototypes).enumerate()
+                    {
+                        table.prototype = if changed_prototypes.contains(&id) {
+                            None
+                        } else {
+                            prototype
+                        };
+                    }
                 }
                 LuaStat::ForStat(stat) => {
+                    let prototypes: Vec<_> =
+                        self.tables.iter().map(|table| table.prototype).collect();
                     let before = self.scopes.clone();
                     for expr in stat.get_iter_expr() {
                         self.expr(&expr);
@@ -770,8 +993,15 @@ impl Indexer {
                     }
                     self.scopes.pop();
                     self.invalidate_loop_assignments(before);
+                    for (table, prototype) in self.tables.iter_mut().zip(prototypes) {
+                        if table.prototype != prototype {
+                            table.prototype = None;
+                        }
+                    }
                 }
                 LuaStat::ForRangeStat(stat) => {
+                    let prototypes: Vec<_> =
+                        self.tables.iter().map(|table| table.prototype).collect();
                     let before = self.scopes.clone();
                     for expr in stat.get_expr_list() {
                         self.expr(&expr);
@@ -788,8 +1018,15 @@ impl Indexer {
                     }
                     self.scopes.pop();
                     self.invalidate_loop_assignments(before);
+                    for (table, prototype) in self.tables.iter_mut().zip(prototypes) {
+                        if table.prototype != prototype {
+                            table.prototype = None;
+                        }
+                    }
                 }
                 LuaStat::WhileStat(stat) => {
+                    let prototypes: Vec<_> =
+                        self.tables.iter().map(|table| table.prototype).collect();
                     let before = self.scopes.clone();
                     if let Some(condition) = stat.get_condition_expr() {
                         self.expr(&condition);
@@ -798,8 +1035,15 @@ impl Indexer {
                         self.block(&block, true);
                     }
                     self.invalidate_loop_assignments(before);
+                    for (table, prototype) in self.tables.iter_mut().zip(prototypes) {
+                        if table.prototype != prototype {
+                            table.prototype = None;
+                        }
+                    }
                 }
                 LuaStat::RepeatStat(stat) => {
+                    let prototypes: Vec<_> =
+                        self.tables.iter().map(|table| table.prototype).collect();
                     let before = self.scopes.clone();
                     self.scopes.push(HashMap::new());
                     if let Some(block) = stat.get_block() {
@@ -811,6 +1055,11 @@ impl Indexer {
                     }
                     self.scopes.pop();
                     self.invalidate_loop_assignments(before);
+                    for (table, prototype) in self.tables.iter_mut().zip(prototypes) {
+                        if table.prototype != prototype {
+                            table.prototype = None;
+                        }
+                    }
                 }
                 _ => self.children(stat.syntax()),
             }
@@ -872,10 +1121,61 @@ fn static_key(key: LuaIndexKey) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn documented_factories_require_a_proven_public_returned_prototype() {
+        let path = "lua/includes/modules/ai_task.lua";
+        let prefix = "local setmetatable = setmetatable\nmodule('ai_task')\nlocal Task = {}\nTask.__index = Task\nfunction Task:Start(npc) end\n";
+        let good = format!(
+            "{prefix}function New() local object = {{}} setmetatable(object, Task) return object end"
+        );
+        let index = FileIndex::parse_file(path, &good);
+        assert!(
+            index
+                .find_symbol("Start", Some("Task"))
+                .unwrap()
+                .source_only
+        );
+        for body in [
+            "local object = {} if UNKNOWN then setmetatable(object, Task) end return object",
+            "local object = {} setmetatable(object, Task) if UNKNOWN then setmetatable(object, {}) end return object",
+            "local object = {} setmetatable(object, Task) setmetatable(object, nil) return object",
+            "local object = {} while UNKNOWN do setmetatable(object, Task) end return object",
+            "local object = {} setmetatable(object, Task) while UNKNOWN do setmetatable(object, {}) end return object",
+            "local object = {} local setmetatable = function() end setmetatable(object, Task) return object",
+            "local object = {} setmetatable(object, Task) return {}",
+            "local function hidden() local object = {} setmetatable(object, Task) return object end return hidden()",
+        ] {
+            let source = format!("{prefix}function New() {body} end");
+            assert!(
+                FileIndex::parse_file(path, &source)
+                    .find_symbol("Start", Some("Task"))
+                    .is_none(),
+                "{body}"
+            );
+        }
+        for private in ["local function New()", "local New\nfunction New()"] {
+            let source = format!(
+                "{prefix}{private} local object = {{}} setmetatable(object, Task) return object end"
+            );
+            assert!(
+                FileIndex::parse_file(path, &source)
+                    .find_symbol("Start", Some("Task"))
+                    .is_none(),
+                "{private}"
+            );
+        }
+        assert!(
+            FileIndex::parse_file("lua/private.lua", &good)
+                .find_symbol("Start", Some("Task"))
+                .is_none()
+        );
+    }
+
     fn names(source: &str) -> Vec<String> {
         let mut names: Vec<_> = index_file("lua/test.lua", source)
             .definitions
             .into_iter()
+            .filter(|def| !def.source_only)
             .map(|def| def.full_name)
             .collect();
         names.sort();
@@ -1088,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn values_and_unknown_aliases_are_not_callable_definitions() {
+    fn values_and_unknown_aliases_are_not_discovery_candidates() {
         assert_eq!(
             names(
                 r#"
