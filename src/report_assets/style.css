@@ -68,4 +68,4 @@ nav[aria-label='Report sections']{border-color:var(--line)}.tab{color:#a7b3ae}.t
 
 .masthead-inner{justify-content:flex-end}
 
-.nav-refresh{margin-left:auto;padding:10px 0;color:var(--muted);font-size:14px;white-space:nowrap}.nav-refresh span{color:var(--ink);font:600 16px/1.5 var(--mono);font-variant-numeric:tabular-nums}
+.nav-refresh{margin-right:auto;padding:10px 0;color:var(--muted);font-size:14px;white-space:nowrap}.nav-refresh span{color:var(--ink);font:600 16px/1.5 var(--mono);font-variant-numeric:tabular-nums}

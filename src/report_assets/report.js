@@ -484,7 +484,7 @@
   if (['priority', 'page', 'category'].includes(initial.get('sort'))) $('sort').value = initial.get('sort');
   const nav = document.querySelector('nav[aria-label="Report sections"]');
   for (const [key, title] of [['all','All findings'],['documentation-quality','Documentation quality']]) {
-    const link = create('a','tab',title); link.href = '#' + key; nav.insertBefore(link, nav.querySelector('.nav-refresh'));
+    const link = create('a','tab',title); link.href = '#' + key; nav.append(link);
   }
   route();
   // Only hide the fallback record after successful initialization.

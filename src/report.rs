@@ -195,7 +195,7 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
     let mut report = String::with_capacity(32_000);
     report.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"dark\"><title>Garry's Mod · Documentation review</title><style>");
     report.push_str(STYLE);
-    report.push_str("</style></head><body><a class=\"skip-link\" href=\"#review\">Skip to findings</a><header class=\"masthead\"><div class=\"masthead-inner\"><div class=\"snapshot\"><span class=\"snapshot-dot\" aria-hidden=\"true\"></span><span>Source snapshot</span>");
+    report.push_str("</style></head><body><a class=\"skip-link\" href=\"#review\">Skip to findings</a><header class=\"masthead\"><div class=\"masthead-inner\"><span class=\"nav-refresh\">Next refresh: <span id=\"nav-refresh-countdown\" aria-live=\"off\">--:--:--</span></span><div class=\"snapshot\"><span class=\"snapshot-dot\" aria-hidden=\"true\"></span><span>Source snapshot</span>");
     write!(report, "<a href=\"{}/tree/{}\" target=\"_blank\" rel=\"noopener noreferrer\"><code>{}</code> ↗</a></div></div></header>", escape(&snapshot.github_url), escape(&snapshot.revision), escape(&snapshot.revision.chars().take(12).collect::<String>())).unwrap();
     let completed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -238,7 +238,7 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
         write!(report, "<a class=\"stat\" href=\"{href}\"><span>{label}</span><strong>{count}</strong><small>{note}</small></a>").unwrap();
     }
     report.push_str("</div><nav aria-label=\"Report sections\"><a class=\"tab\" id=\"review-tab\" href=\"#fixes\">Fixes <span class=\"total-badge\">");
-    write!(report, "{actionable}</span></a><a class=\"tab\" id=\"coverage-tab\" href=\"#coverage\">Coverage & methodology</a><a class=\"tab\" href=\"#maintenance\">Source maintenance</a><a class=\"tab\" href=\"#opportunities\">Contribute</a><a class=\"tab\" href=\"#diagnostics\">Diagnostics</a><span class=\"nav-note\">Read-only report · commit-pinned evidence</span><span class=\"nav-refresh\">Next refresh: <span id=\"nav-refresh-countdown\" aria-live=\"off\">--:--:--</span></span></nav>").unwrap();
+    write!(report, "{actionable}</span></a><a class=\"tab\" id=\"coverage-tab\" href=\"#coverage\">Coverage & methodology</a><a class=\"tab\" href=\"#maintenance\">Source maintenance</a><a class=\"tab\" href=\"#opportunities\">Contribute</a><a class=\"tab\" href=\"#diagnostics\">Diagnostics</a><span class=\"nav-note\">Read-only report · commit-pinned evidence</span></nav>").unwrap();
     // Tables remain the canonical rendered record for no-JS reading, printing and
     // the HTML summary tool. JS enhances that record into a paged review list.
     // Revisit if another consumer needs a shared structured report format.
