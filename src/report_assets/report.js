@@ -22,6 +22,46 @@
   ];
   const labels = new Map(groups.map(g => [g[0], g[1]]));
   const $ = id => document.getElementById(id);
+  const liveClock = $('live-clock');
+  const nextRefreshLocal = $('next-refresh-local');
+  const nextRefreshUtc = $('next-refresh-utc');
+  const refreshCountdown = $('refresh-countdown');
+  const localClockFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short'
+  });
+  const localDateFormatter = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+  });
+  const utcDateFormatter = new Intl.DateTimeFormat('en-GB', {
+    weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+    timeZone: 'UTC', hourCycle: 'h23'
+  });
+  function updateRefreshClock() {
+    const currentTime = new Date();
+    liveClock.dateTime = currentTime.toISOString();
+    liveClock.textContent = localClockFormatter.format(currentTime);
+
+    const today = [0, 8, 16].map(hour => new Date(Date.UTC(
+      currentTime.getUTCFullYear(), currentTime.getUTCMonth(), currentTime.getUTCDate(), hour, 17
+    )));
+    let nextRefresh = today.find(candidate => candidate > currentTime);
+    if (!nextRefresh) {
+      nextRefresh = new Date(Date.UTC(
+        currentTime.getUTCFullYear(), currentTime.getUTCMonth(), currentTime.getUTCDate() + 1, 0, 17
+      ));
+    }
+    nextRefreshLocal.dateTime = nextRefresh.toISOString();
+    nextRefreshLocal.textContent = localDateFormatter.format(nextRefresh);
+    nextRefreshUtc.textContent = `${utcDateFormatter.format(nextRefresh)} UTC`;
+
+    const secondsLeft = Math.max(0, Math.floor((nextRefresh.getTime() - currentTime.getTime()) / 1000));
+    const hours = Math.floor(secondsLeft / 3600);
+    const minutes = Math.floor((secondsLeft % 3600) / 60);
+    const seconds = secondsLeft % 60;
+    refreshCountdown.textContent = `in ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  updateRefreshClock();
+  window.setInterval(updateRefreshClock, 1000);
   const create = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;

@@ -111,6 +111,8 @@ python scripts/qa_report.py .cache/report-fixtures/empty.html
 
 GitHub may delay scheduled runs during high load. The 17-minute offset avoids scheduling exactly on the hour.
 
+The report also shows the visitor's live local time, the next scheduled refresh in local time and UTC, and a countdown. These display the schedule defined in the workflow; GitHub may start a scheduled run late, and the report changes after that run completes successfully.
+
 ## Published report
 
 GitHub Pages serves the standalone root `index.html`. The automated workflow refreshes and deploys this snapshot; its downloaded source checkout and wiki caches stay on the temporary runner.
