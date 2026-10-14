@@ -1,0 +1,61 @@
+name: Refresh and publish wiki report
+
+on:
+  schedule:
+    - cron: "17 */8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: refresh-wiki-report
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out the project
+        uses: actions/checkout@v7
+
+      - name: Install stable Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+
+      - name: Run the full audit
+        run: cargo run --release -- --pull audit --output-report index.html
+
+      - name: Commit the report when it changes
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "The report is unchanged."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- index.html
+          git commit -m "Refresh wiki audit report"
+          git push
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Prepare the standalone report
+        run: |
+          mkdir -p public-site
+          cp index.html public-site/index.html
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public-site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

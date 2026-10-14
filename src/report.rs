@@ -1,0 +1,544 @@
+use crate::audit_checks::{AuditFinding, FindingKind, SourceEvidence};
+use crate::diff_engine::DiscrepancyKind;
+use crate::git_repo::SourceSnapshot;
+use std::fmt::Write;
+
+pub struct SourceIssue {
+    pub kind: DiscrepancyKind,
+    pub page: String,
+    pub symbol: String,
+    pub current: String,
+    pub expected: String,
+    pub score: usize,
+    pub reason: String,
+    pub evidence: Option<SourceEvidence>,
+}
+
+const SOURCE_VIEWS: [(&str, &str, &str); 6] = [
+    (
+        "missing-source",
+        "Missing source tags",
+        "Documented APIs with a resolved Lua implementation and no source tag.",
+    ),
+    (
+        "line-ranges",
+        "Line range drift",
+        "Wiki source ranges that differ from the exact Lua function boundaries.",
+    ),
+    (
+        "wrong-files",
+        "Wrong file paths",
+        "Source tags pointing to a different file from the resolved implementation.",
+    ),
+    (
+        "dead-files",
+        "Dead source links",
+        "Tagged source files that do not exist in the checkout, with no replacement definition resolved.",
+    ),
+    (
+        "realm-mismatches",
+        "Realm mismatches",
+        "Direct source evidence whose realm does not overlap the wiki declaration.",
+    ),
+    (
+        "missing-realms",
+        "Missing realm tags",
+        "Resolved source definitions with realm evidence and no wiki realm declaration.",
+    ),
+];
+
+fn source_category(kind: &DiscrepancyKind) -> &'static str {
+    match kind {
+        DiscrepancyKind::MissingSourceTag { .. } => "missing-source",
+        DiscrepancyKind::LineRangeDrift => "line-ranges",
+        DiscrepancyKind::WrongFile { .. } => "wrong-files",
+        DiscrepancyKind::FileNotFound { .. } => "dead-files",
+        DiscrepancyKind::RealmMismatch { .. } => "realm-mismatches",
+        DiscrepancyKind::MissingRealmTag { .. } => "missing-realms",
+    }
+}
+
+pub struct ReportData {
+    pub panel_names: Vec<String>,
+    pub metrics: Vec<(String, usize, String)>,
+    pub findings: Vec<AuditFinding>,
+    pub source_issues: Vec<SourceIssue>,
+    pub missing_pages: Vec<(String, Option<SourceEvidence>)>,
+    pub unresolved: Vec<(String, Vec<String>)>,
+    pub failed: Vec<(String, String)>,
+}
+
+pub fn wiki_url(address: &str) -> String {
+    let mut url = reqwest::Url::parse("https://wiki.facepunch.com/gmod/").unwrap();
+    {
+        let mut path = url.path_segments_mut().unwrap();
+        path.pop_if_empty();
+        for segment in address.split('/') {
+            path.push(segment);
+        }
+    }
+    url.into()
+}
+
+fn escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn page_link(address: &str) -> String {
+    format!(
+        "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{}</a>",
+        escape(&wiki_url(address)),
+        escape(address)
+    )
+}
+
+fn sources(snapshot: &SourceSnapshot, evidence: &[SourceEvidence]) -> String {
+    evidence.iter().map(|source| {
+        let lines = if source.start == source.end { format!("L{}", source.start) }
+            else { format!("L{}–L{}", source.start, source.end) };
+        format!("<div class=\"evidence\"><a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\"><span>{}</span><code>{}:{}</code></a></div>",
+            escape(&snapshot.source_url(&source.file, source.start, source.end)),
+            escape(&source.label), escape(&source.file), lines)
+    }).collect::<Vec<_>>().join("")
+}
+
+fn category(kind: FindingKind) -> &'static str {
+    match kind {
+        FindingKind::MalformedSource => "malformed-source",
+        FindingKind::BrokenLink => "broken-link",
+        FindingKind::UnverifiedLink => "unverified-link",
+        FindingKind::IdentityConflict => "identity",
+        FindingKind::SignatureDrift => "signature",
+        FindingKind::ReturnDrift => "returns",
+        FindingKind::LoadRealmConflict => "load-realm",
+    }
+}
+
+fn section(
+    report: &mut String,
+    id: &str,
+    title: &str,
+    count: usize,
+    description: &str,
+    headers: &[&str],
+) {
+    write!(report, "<section id=\"{id}\" class=\"finding-section\" aria-labelledby=\"{id}-heading\"><div class=\"section-heading\"><h2 id=\"{id}-heading\">{title}</h2><span class=\"section-count\">{count}</span></div><p class=\"section-description\">{description}</p><div class=\"table-wrap\"><table class=\"findings\"><caption class=\"sr-only\">{title}</caption><thead><tr>").unwrap();
+    for header in headers {
+        write!(report, "<th scope=\"col\" aria-sort=\"none\"><button type=\"button\" class=\"sort\" aria-label=\"Sort by {}\">{}<span aria-hidden=\"true\"> ↕</span></button></th>", escape(header), escape(header)).unwrap();
+    }
+    report.push_str("</tr></thead><tbody>");
+}
+
+fn end_section(report: &mut String, count: usize) {
+    report.push_str("</tbody></table></div>");
+    write!(
+        report,
+        "<p class=\"empty-state\" {}>{}</p></section>",
+        if count == 0 { "" } else { "hidden" },
+        if count == 0 {
+            "No findings in this section."
+        } else {
+            "No findings match the current filters."
+        }
+    )
+    .unwrap();
+}
+
+pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
+    let metric = |name: &str| {
+        data.metrics
+            .iter()
+            .find(|(label, _, _)| label == name)
+            .map(|(_, value, _)| *value)
+            .unwrap_or(0)
+    };
+    let total = data.source_issues.len()
+        + data.findings.len()
+        + data.missing_pages.len()
+        + data.unresolved.len()
+        + data.failed.len();
+    let load_findings = data
+        .findings
+        .iter()
+        .filter(|f| f.kind == FindingKind::LoadRealmConflict)
+        .count();
+    let metadata_count = data.findings.len() - load_findings;
+    let mut report = String::with_capacity(32_000);
+    report.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light\"><title>Garry's Mod ? Documentation review</title><style>");
+    report.push_str(STYLE);
+    report.push_str("</style></head><body><a class=\"skip-link\" href=\"#review\">Skip to findings</a><header class=\"masthead\"><div class=\"masthead-inner\"><a class=\"brand\" href=\"#all\"><span class=\"brand-mark\" aria-hidden=\"true\">g.</span><span>Garry's Mod<span class=\"brand-subtitle\">WIKI AUDIT</span></span></a><div class=\"snapshot\"><span class=\"snapshot-dot\" aria-hidden=\"true\"></span><span>Source snapshot</span>");
+    write!(report, "<a href=\"{}/tree/{}\" target=\"_blank\" rel=\"noopener noreferrer\"><code>{}</code> ?</a></div></div></header>", escape(&snapshot.github_url), escape(&snapshot.revision), escape(&snapshot.revision.chars().take(12).collect::<String>())).unwrap();
+    report.push_str("<main class=\"shell\"><header class=\"intro\"><div><p class=\"eyebrow\">DOCUMENTATION / QUALITY REVIEW</p><h1>Every finding. <span>In context.</span></h1><p class=\"intro-copy\">Review the gaps between the wiki and its Lua source.<br class=\"desktop-break\"> Follow the evidence. Decide what needs attention.</p></div><div class=\"intro-note\"><span class=\"note-rule\"></span><strong>Built for a closer look.</strong><p>Exact source lines. Clear comparisons.<br>One place to work through the details.</p><a href=\"#coverage\">About this audit <span aria-hidden=\"true\">?</span></a></div></header><div class=\"stats\" aria-label=\"Audit summary\">");
+    for (label, count, note, href) in [
+        (
+            "Pages checked",
+            metric("Total Pages Checked"),
+            "Within this run's scope",
+            "#coverage",
+        ),
+        (
+            "Clean source pages",
+            metric("Clean Source Pages"),
+            "No supported checks flagged",
+            "#coverage",
+        ),
+        (
+            "Items to review",
+            total,
+            "Findings, unresolved & failed",
+            "#all",
+        ),
+        (
+            "Failed checks",
+            data.failed.len(),
+            "Not counted as clean or missing",
+            "#failed",
+        ),
+    ] {
+        write!(report, "<a class=\"stat\" href=\"{href}\"><span>{label}</span><strong>{count}</strong><small>{note}</small></a>").unwrap();
+    }
+    report.push_str("</div><nav aria-label=\"Report sections\"><a class=\"tab\" id=\"review-tab\" href=\"#all\">Findings <span class=\"total-badge\">");
+    write!(report, "{total}</span></a><a class=\"tab\" id=\"coverage-tab\" href=\"#coverage\">Coverage & methodology</a><span class=\"nav-note\">Read-only report ? commit-pinned evidence</span></nav>").unwrap();
+    // Tables remain the canonical rendered record for no-JS reading, printing and
+    // the HTML summary tool. JS enhances that record into a paged review list.
+    // Revisit if another consumer needs a shared structured report format.
+    report.push_str(r##"<div id="review" class="workbench enhanced-only"><aside class="filters" aria-label="Finding categories"><div class="filter-heading"><span>REVIEW QUEUE</span><span id="queue-total"></span></div><div id="category-list"></div><div class="rail-note"><strong>Evidence, not automatic edits.</strong><p>Contract and realm findings need human judgment. Uncertain checks stay visible.</p><a href="#coverage">See scope & limitations ?</a></div></aside><div class="queue"><div class="queue-heading"><div><p class="eyebrow" id="queue-eyebrow">THE COMPLETE PICTURE</p><h2 id="queue-title">All findings</h2></div><button type="button" id="expand-all" aria-pressed="false">Expand this page</button></div><p id="queue-description">All findings and incomplete checks, with their original evidence.</p><div class="queue-tools"><label class="search-box"><span class="sr-only">Search all findings</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="search" placeholder="Search pages, symbols, files?" autocomplete="off"><kbd aria-hidden="true">/</kbd></label><label class="sort-box"><span class="sr-only">Sort findings</span><select id="sort"><option value="priority">Priority order</option><option value="page">Page name ? A?Z</option><option value="category">Category ? A?Z</option></select></label></div><label class="panel-filter"><input type="checkbox" id="hide-panels"><span><strong>Hide VGUI &amp; panel findings</strong><small>Across every category: controls, panel methods, VGUI and Derma APIs.</small></span><span id="panel-filter-count" class="panel-filter-count"></span></label><label class="panel-filter"><input type="checkbox" id="hide-base"><span><strong>Hide base gamemode findings</strong><small>Across every category: findings with gamemodes/base source evidence.</small></span><span id="base-filter-count" class="panel-filter-count"></span></label><div class="mobile-filter"><label for="category-picker">Category</label><select id="category-picker"></select></div><div class="results-line"><span id="result-count" role="status" aria-live="polite"></span><button type="button" id="reset">Clear filters</button></div><div id="finding-list"></div><div id="empty-state" hidden><span class="empty-mark" aria-hidden="true">?</span><h3>No findings here.</h3><p>Choose another category or clear your search.</p></div><div class="pagination"><button type="button" id="previous">? Previous</button><span id="page-position" aria-live="polite"></span><button type="button" id="next">Next ?</button></div></div></div><section id="coverage" aria-labelledby="coverage-heading"><div class="coverage-intro"><p class="eyebrow">HOW TO READ THIS REPORT</p><h2 id="coverage-heading">The boundaries of the audit.</h2><p>Findings are evidence for review. A static check can identify a discrepancy without proving what happens at runtime.</p></div><div class="method-grid"><article><span class="method-number">01 / SOURCE</span><h3>A fixed point of reference.</h3><p>GitHub evidence points to the recorded commit and exact source lines. Uncommitted changes are not included.</p></article><article><span class="method-number">02 / SCOPE</span><h3>Public Lua, with limits.</h3><p>Sandbox and TTT are excluded; the base gamemode and other Lua files remain included. Missing-page candidates exclude private helpers, locals, instance callbacks, ordinary fields, and unresolved dynamic exports. Canonical and inherited documentation covers overrides. Prefix and limit options restrict coverage.</p></article><article><span class="method-number">03 / INTERPRETATION</span><h3>Uncertainty stays visible.</h3><p>Contracts account for method self, varargs, overloads, and optional returns. Dynamic returns and uncertain control flow remain inconclusive. Realm traces establish static load paths, not runtime behavior or the absence of other routes. Failed and unresolved checks are never clean results.</p></article></div><p class="reference-note">Engine roots and realm constants follow the official <a href="https://wiki.facepunch.com/gmod/Lua_Loading_Order" target="_blank" rel="noopener noreferrer">Lua loading order</a>, <a href="https://wiki.facepunch.com/gmod/States" target="_blank" rel="noopener noreferrer">States / Realms</a>, and <a href="https://wiki.facepunch.com/gmod/Global_Variables" target="_blank" rel="noopener noreferrer">Global Variables</a> references.</p><h3 class="metrics-title">All metrics & coverage</h3><div class="table-wrap"><table class="coverage"><caption class="sr-only">All audit metrics</caption><thead><tr><th scope="col">Metric</th><th scope="col">Count</th><th scope="col">Meaning</th></tr></thead><tbody>"##);
+    for (label, count, description) in &data.metrics {
+        write!(
+            report,
+            "<tr><th scope=\"row\">{}</th><td class=\"number\">{count}</td><td>{}</td></tr>",
+            escape(label),
+            escape(description)
+        )
+        .unwrap();
+    }
+    for kind in FindingKind::ALL {
+        write!(
+            report,
+            "<tr><th scope=\"row\">{}</th><td class=\"number\">{}</td><td>{}</td></tr>",
+            escape(kind.label()),
+            data.findings.iter().filter(|f| f.kind == kind).count(),
+            match kind {
+                FindingKind::UnverifiedLink =>
+                    "Request or redirect uncertainty; never counted as a broken link",
+                FindingKind::BrokenLink =>
+                    "Target absent after index, alias, redirect, and live-page verification",
+                _ => "Individual evidence findings for review",
+            }
+        )
+        .unwrap();
+    }
+    report.push_str("</tbody></table></div></section><div id=\"source-data\"><noscript><p class=\"notice\">JavaScript is off. Every finding and evidence link is available in the tables below. Enable JavaScript for search, filters, sorting, and the review list.</p></noscript>");
+
+    section(
+        &mut report,
+        "missing-pages",
+        "Entirely missing pages",
+        data.missing_pages.len(),
+        "Exported Lua APIs with no matching wiki page after alias, inheritance, redirect, and live-page checks. Undocumented status still warrants review.",
+        &["Page", "Repository evidence"],
+    );
+    let mut missing: Vec<_> = data.missing_pages.iter().collect();
+    missing.sort_by(|a, b| a.0.cmp(&b.0));
+    for (address, evidence) in missing {
+        write!(
+            report,
+            "<tr data-category=\"{}\"><td>{}</td><td>{}</td></tr>",
+            if data.panel_names.contains(address) {
+                "missing-controls"
+            } else {
+                "missing"
+            },
+            page_link(address),
+            evidence
+                .as_ref()
+                .map(|source| sources(snapshot, std::slice::from_ref(source)))
+                .unwrap_or_else(
+                    || "<span class=\"muted\">No exported Lua definition found</span>".into()
+                )
+        )
+        .unwrap();
+    }
+    end_section(&mut report, data.missing_pages.len());
+
+    for (id, title, description) in SOURCE_VIEWS {
+        let count = data
+            .source_issues
+            .iter()
+            .filter(|issue| source_category(&issue.kind) == id)
+            .count();
+        section(
+            &mut report,
+            id,
+            title,
+            count,
+            description,
+            &[
+                "Score",
+                "Page / symbol",
+                "Wiki value",
+                "Source evidence / expected",
+                "Finding",
+            ],
+        );
+        let mut issues: Vec<_> = data
+            .source_issues
+            .iter()
+            .filter(|issue| source_category(&issue.kind) == id)
+            .collect();
+        issues.sort_by(|a, b| b.score.cmp(&a.score).then(a.page.cmp(&b.page)));
+        for issue in issues {
+            write!(report, "<tr data-category=\"{id}\"><td class=\"number\" data-sort=\"{}\">{}</td><td>{}<code class=\"symbol\">{}</code></td><td><code>{}</code></td><td>{}<code class=\"expected\">{}</code></td><td>{}</td></tr>",
+            issue.score, issue.score, page_link(&issue.page), escape(&issue.symbol), escape(&issue.current),
+            issue.evidence.as_ref().map(|source| sources(snapshot, std::slice::from_ref(source))).unwrap_or_default(),
+            escape(&issue.expected), escape(&issue.reason)).unwrap();
+        }
+        end_section(&mut report, count);
+    }
+
+    for (id, title, description, load_only) in [
+        (
+            "metadata",
+            "Metadata & link findings",
+            "Structural checks, reference verification, API identity, and function contracts. Unverified links remain separate from confirmed broken links.",
+            false,
+        ),
+        (
+            "load-realms",
+            "Load path realm review",
+            "Positive engine/include paths reach the definition in additional realms. Runtime dependencies and dynamic loading remain unproven; these findings require review.",
+            true,
+        ),
+    ] {
+        let count = if load_only {
+            load_findings
+        } else {
+            metadata_count
+        };
+        section(
+            &mut report,
+            id,
+            title,
+            count,
+            description,
+            &["Category", "Page", "Finding", "Evidence"],
+        );
+        let mut findings: Vec<_> = data
+            .findings
+            .iter()
+            .filter(|finding| (finding.kind == FindingKind::LoadRealmConflict) == load_only)
+            .collect();
+        findings.sort_by(|a, b| {
+            a.kind
+                .cmp(&b.kind)
+                .then(a.page.cmp(&b.page))
+                .then(a.message.cmp(&b.message))
+        });
+        for finding in findings {
+            let mut evidence = sources(snapshot, &finding.sources);
+            if let Some(line) = finding.wiki_line {
+                write!(
+                    evidence,
+                    "<span class=\"wiki-line\">Wiki markup line {line}</span>"
+                )
+                .unwrap();
+            }
+            if let Some(target) = &finding.target {
+                write!(evidence, "<div>Target: {}</div>", page_link(target)).unwrap();
+            }
+            write!(report, "<tr data-category=\"{}\"><td><span class=\"tag\">{}</span></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            category(finding.kind), escape(finding.kind.label()), page_link(&finding.page), escape(&finding.message), evidence).unwrap();
+        }
+        end_section(&mut report, count);
+    }
+
+    section(
+        &mut report,
+        "unresolved",
+        "Unresolved source definitions",
+        data.unresolved.len(),
+        "Tagged symbols that could not be resolved confidently. These pages are not counted as clean.",
+        &["Page", "Unresolved evidence"],
+    );
+    for (page, messages) in &data.unresolved {
+        write!(
+            report,
+            "<tr data-category=\"unresolved\"><td>{}</td><td>{}</td></tr>",
+            page_link(page),
+            escape(&messages.join("; "))
+        )
+        .unwrap();
+    }
+    end_section(&mut report, data.unresolved.len());
+    section(
+        &mut report,
+        "failed",
+        "Failed checks",
+        data.failed.len(),
+        "Incomplete checks caused by fetch, parse, or resolution errors. These pages are never counted as missing or clean.",
+        &["Page", "Error"],
+    );
+    for (page, error) in &data.failed {
+        write!(
+            report,
+            "<tr data-category=\"failed\"><td>{}</td><td>{}</td></tr>",
+            page_link(page),
+            escape(error)
+        )
+        .unwrap();
+    }
+    end_section(&mut report, data.failed.len());
+    report.push_str("</div><footer><span>Garry's Mod <strong>Wiki Audit</strong></span><span>Static analysis. Evidence for human review.</span></footer></main><script>");
+    // Emit the snapshot registry, not a spelling heuristic (many controls lack a D prefix).
+    let names = serde_json::to_string(&data.panel_names)
+        .unwrap()
+        .replace('<', "\\u003c");
+    write!(report, "const registeredPanelNames = {names};\n").unwrap();
+    report.push_str(SCRIPT);
+    report.push_str("</script></body></html>");
+    report
+}
+
+const STYLE: &str = include_str!("report_assets/style.css");
+
+const SCRIPT: &str = include_str!("report_assets/report.js");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_preserves_all_finding_families_and_empty_coverage() {
+        let snapshot = SourceSnapshot {
+            revision: "0123456789012345678901234567890123456789".into(),
+            github_url: "https://github.com/Facepunch/garrysmod".into(),
+        };
+        let evidence = SourceEvidence {
+            file: "lua/includes/example.lua".into(),
+            start: 12,
+            end: 24,
+            label: "Source definition".into(),
+        };
+        let mut data = ReportData {
+            panel_names: vec!["SpawnIcon".into(), "ImageCheckBox".into()],
+            metrics: vec![(
+                "Total Pages Checked".into(),
+                85,
+                "Synthetic browser regression fixture".into(),
+            )],
+            findings: vec![],
+            source_issues: vec![],
+            missing_pages: vec![("Global.Undocumented".into(), Some(evidence.clone()))],
+            unresolved: vec![(
+                "Global.Unresolved".into(),
+                vec!["No confident match was found".into()],
+            )],
+            failed: vec![(
+                "Global.Failed".into(),
+                "HTTP 503; not a missing page".into(),
+            )],
+        };
+        let kinds = [
+            DiscrepancyKind::LineRangeDrift,
+            DiscrepancyKind::MissingSourceTag {
+                target_file: evidence.file.clone(),
+            },
+            DiscrepancyKind::WrongFile {
+                original_file: "lua/old.lua".into(),
+                target_file: evidence.file.clone(),
+            },
+            DiscrepancyKind::FileNotFound {
+                original_file: "lua/deleted.lua".into(),
+            },
+            DiscrepancyKind::RealmMismatch {
+                wiki_realm: "Client".into(),
+                repo_realm: "Server".into(),
+            },
+            DiscrepancyKind::MissingRealmTag {
+                repo_realm: "Shared".into(),
+            },
+        ];
+        for i in 0..67 {
+            data.source_issues.push(SourceIssue { kind: kinds[i % kinds.len()].clone(), page: format!("Example.Function{i:03}"), symbol: format!("Example.Function{i:03}"), current: "4-L9".into(), expected: "12-L24".into(), score: i * 100, reason: "Review this finding against the recorded source. A longer explanation remains available in full when expanded.".into(), evidence: Some(evidence.clone()) });
+        }
+        for kind in FindingKind::ALL {
+            let mut finding = AuditFinding::new(
+                kind,
+                "Example.AVeryLongSymbolNameThatMustWrapOnNarrowScreensAndNeverOverflowTheReport",
+                "Review <script>alert('unsafe')</script> & preserve all original information."
+                    .into(),
+            );
+            finding.sources = vec![evidence.clone()];
+            finding.wiki_line = Some(8);
+            finding.target = Some("Global.ReferenceTarget".into());
+            data.findings.push(finding);
+        }
+        let full = render(&snapshot, &data);
+        assert_eq!(full.matches("<tr data-category=").count(), 77);
+        for kind in FindingKind::ALL {
+            assert!(full.contains(kind.label()));
+        }
+        assert!(full.contains("HTTP 503; not a missing page"));
+        assert!(full.contains("&lt;script&gt;alert"));
+        data.source_issues.clear();
+        data.findings.clear();
+        data.missing_pages.clear();
+        data.unresolved.clear();
+        data.failed.clear();
+        let empty = render(&snapshot, &data);
+        assert_eq!(empty.matches("<tr data-category=").count(), 0);
+        // Optional fixture export drives the browser through the real renderer.
+        if let Some(dir) = std::env::var_os("GMOD_REPORT_FIXTURE_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("populated.html"), full).unwrap();
+            std::fs::write(dir.join("empty.html"), empty).unwrap();
+        }
+    }
+
+    #[test]
+    fn standalone_html_escapes_wiki_data_and_links_exact_evidence_without_edits() {
+        let snapshot = SourceSnapshot {
+            revision: "0123456789012345678901234567890123456789".into(),
+            github_url: "https://github.com/Facepunch/garrysmod".into(),
+        };
+        let mut finding = AuditFinding::new(
+            FindingKind::SignatureDrift,
+            "api.Test",
+            "Review <script>alert('x')</script> | y".into(),
+        );
+        finding.sources.push(SourceEvidence {
+            file: "lua/test.lua".into(),
+            start: 2,
+            end: 7,
+            label: "api.Test".into(),
+        });
+        let data = ReportData {
+            panel_names: vec![],
+            metrics: vec![("Total Pages Checked".into(), 1, "Pages".into())],
+            findings: vec![finding],
+            source_issues: vec![],
+            missing_pages: vec![("api.<Missing>".into(), None)],
+            unresolved: vec![],
+            failed: vec![],
+        };
+        let report = render(&snapshot, &data);
+        assert!(report.starts_with("<!doctype html>"));
+        assert!(report.contains("<nav aria-label=\"Report sections\">"));
+        assert!(report.contains("Signature Review Findings"));
+        assert!(report.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; | y"));
+        assert!(report.contains("api.&lt;Missing&gt;"));
+        assert!(report.contains(
+            "/blob/0123456789012345678901234567890123456789/garrysmod/lua/test.lua#L2-L7"
+        ));
+        assert!(!report.contains("<script>alert"));
+        assert!(!report.contains("```"));
+        assert!(!report.contains("Unified Diff"));
+        assert!(!report.contains("New tag:"));
+    }
+}

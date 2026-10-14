@@ -1,0 +1,12 @@
+/target/
+/.cache/
+/garrysmod_repo/
+/reports/
+/*.log
+/audit_report.html
+/discrepancy_report.md
+/pagelist.json
+/all_lua.txt
+/test.html
+/duh
+__pycache__/

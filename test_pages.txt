@@ -1,0 +1,23 @@
+# Standard Gmod Lua library and global functions to verify
+table.Copy
+table.Empty
+table.Inherit
+table.Sanitise
+table.DeSanitise
+table.Count
+table.HasValue
+table.GetKeys
+table.Merge
+table.Add
+Global.Color
+Global.ColorAlpha
+Global.IsColor
+string.Trim
+string.TrimRight
+string.TrimLeft
+string.Replace
+math.Clamp
+math.Round
+math.Truncate
+util.JSONToTable
+util.TableToJSON

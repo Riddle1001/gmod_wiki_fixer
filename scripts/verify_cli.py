@@ -1,0 +1,286 @@
+"""Exercise the real CLI against temporary Git repositories and local HTTP fixtures.
+
+No live wiki or working-tree source changes. Logs and fixtures are retained for review.
+Run after cargo build; optional --repo exercises the real source snapshot without HTTP.
+"""
+import argparse
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote, urlparse
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    project = Path(__file__).resolve().parent.parent
+    parser.add_argument("--binary", type=Path, default=project / "target/debug/gmod_wiki_fixer.exe")
+    parser.add_argument("--repo", type=Path)
+    args = parser.parse_args()
+    binary = args.binary.resolve()
+    root = Path(tempfile.mkdtemp(prefix="gmod-cli-regression-"))
+    log_path = root / "verification.jsonl"
+    start = time.monotonic()
+    failures = []
+    lock = threading.Lock()
+    log = log_path.open("w", encoding="utf-8")
+
+    def record(event, **data):
+        with lock:
+            log.write(json.dumps({"elapsed": time.monotonic() - start, "event": event, **data}) + "\n")
+            log.flush()
+
+    def check(name, condition, **detail):
+        record("assert", name=name, passed=bool(condition), **detail)
+        if not condition:
+            failures.append(name)
+
+    def run(name, command, cwd=root):
+        result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=180)
+        record("process", name=name, command=[str(x) for x in command], code=result.returncode,
+               stdout=result.stdout, stderr=result.stderr)
+        return result
+
+    record("CANARY", message="Capture active; all cases first-pass, no retries")
+    repo = root / "repo"
+    lua = repo / "garrysmod/lua"
+    lua.mkdir(parents=True)
+    source = lua / "probe.lua"
+    original = "function Probe() end\nfunction probe() end\n"
+    source.write_text(original, encoding="utf-8")
+    (lua / "client").mkdir()
+    (lua / "server").mkdir()
+    (lua / "client/realm.lua").write_text("function RealmProbe() end\n", encoding="utf-8")
+    (lua / "server/realm.lua").write_text("function RealmProbe() end\n", encoding="utf-8")
+
+    (lua / "controls.lua").write_text('''local P = {}
+function P:OnStartDragging() end
+vgui.Register("ControlProbeChild", P, "Panel")
+vgui.Register("ControlProbeEmpty", {}, "Panel")
+derma.DefineControl("ControlProbeKnown", "Known", {}, "Panel")
+vgui.Register("ControlProbeFailure", {}, "Panel")
+local vgui = { Register = function() end }
+vgui.Register("ControlProbePrivate", {}, "Panel")
+''', encoding="utf-8")
+
+    (lua / "registered_meta.lua").write_text('''local COLOR = {}
+RegisterMetaTable("Color", COLOR)
+function COLOR:Copy() return self end
+local Other = {}
+function Other:Copy() end
+local RegisterMetaTable = function() end
+RegisterMetaTable("PrivateMeta", Other)
+''', encoding="utf-8")
+
+    def git(*arguments):
+        result = run("git", ["git", "-c", "user.name=CLI Fixture", "-c", "user.email=fixture@example.invalid",
+                             "-c", f"core.hooksPath={root / 'no-hooks'}", *arguments], repo)
+        if result.returncode:
+            raise RuntimeError(result.stderr)
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("remote", "add", "origin", "https://github.com/Facepunch/garrysmod.git")
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    revision = git("rev-parse", "HEAD")
+    state = {"index_status": 200, "version": 1, "requests": [], "pages": {}}
+
+    def page(address, markup="", title=None):
+        return {"address": address, "title": title or address, "markup": markup, "revisionId": 1}
+
+    state["pages"] = {
+        "Global.Probe": page("Global.Probe", "<function name='Probe'><file line='9'>lua/probe.lua</file></function>"),
+        "Global.probe": page("Global.probe", "<function name='probe'><file line='2'>lua/probe.lua</file></function>"),
+        "Review:A": page("Review:A", title="Colon page"),
+        "Review_A": page("Review_A", title="Underscore page"),
+        "Color:Copy": page("Color:Copy", "<function name='Copy' parent='Color' type='classfunc'><file line='99'>lua/registered_meta.lua</file></function>"),
+        "ControlProbeKnown": page("ControlProbeKnown"),
+        "ControlProbeFailure": 503,
+        "PANEL:OnStartDragging": page("PANEL:OnStartDragging"),
+        "Failure": 500,
+        "Traversal": page("Traversal", "<function name='Outside'><file line='99'>../../outside.lua</file></function>"),
+        "Oversized": page("Oversized", "<function name='Probe'><file line='18446744073709551615-L18446744073709551615'>lua/probe.lua</file></function>"),
+        "Global.RealmProbe": page("Global.RealmProbe", "<function name='RealmProbe'><realm>Client</realm><file line='1'>lua/server/realm.lua</file></function>"),
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            address = unquote(urlparse(self.path).path.removeprefix("/gmod/"))
+            state["requests"].append(address)
+            if address == "~pagelist":
+                status = state["index_status"]
+                body = [{"address": key, "updateCount": state["version"]} for key in state["pages"]]
+            else:
+                body = state["pages"].get(address, 404)
+                status = body if isinstance(body, int) else 200
+            payload = json.dumps(body).encode()
+            record("http", address=address, status=status)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+
+    def cli(name, *arguments, source_repo=repo):
+        return run(name, [str(binary), "--repo-path", str(source_repo), "--wiki-url", url,
+                          "--cache-dir", str(root / "cache"), *arguments])
+
+    try:
+        (root / "meta-pages.txt").write_text("Color:Copy\n", encoding="utf-8")
+        meta_result = cli("registered metatable source lookup", "check-list", "meta-pages.txt", "--output-report", "meta.html")
+        meta_report = (root / "meta.html").read_text(encoding="utf-8")
+        check("registered metatable resolves exact source and line range", meta_result.returncode == 0 and
+              "Color:Copy" in meta_report and "registered_meta.lua#L3" in meta_report and
+              'data-category="line-ranges"' in meta_report and 'data-category="unresolved"' not in meta_report)
+        scan = cli("registered metatable discovery", "scan", "--limit", "0", "--output-report", "meta-scan.html")
+        # Discovery count is not used as proof of lookup; the report above exercises the real page path.
+        check("metatable registration remains usable in discovery", scan.returncode == 0)
+        result = cli("control overview discovery", "audit", "--prefix", "ControlProbe", "--output-report", "controls.html")
+        controls = (root / "controls.html").read_text(encoding="utf-8")
+        from html.parser import HTMLParser
+        class Rows(HTMLParser):
+            def __init__(self): super().__init__(); self.category = None; self.rows = []
+            def handle_starttag(self, tag, attrs):
+                if tag == "tr": self.category = dict(attrs).get("data-category")
+                if tag == "a" and self.category: self.rows.append((self.category, dict(attrs).get("href", "")))
+            def handle_endtag(self, tag):
+                if tag == "tr": self.category = None
+        parsed = Rows(); parsed.feed(controls)
+        missing = [href for category, href in parsed.rows if category == "missing-controls" and "wiki.facepunch" in href]
+        check("empty and inherited-only controls require their own overview", len(missing) == 2 and
+              any(href.endswith("/ControlProbeEmpty") for href in missing) and
+              any(href.endswith("/ControlProbeChild") for href in missing))
+        check("inherited hook and shadowed registrations are not missing", not any(
+              "OnStartDragging" in href or "ControlProbePrivate" in href for category, href in parsed.rows))
+        check("failed control lookup is not reported missing", result.returncode != 0 and
+              not any(href.endswith("/ControlProbeFailure") for href in missing) and
+              any(category == "failed" and href.endswith("/ControlProbeFailure") for category, href in parsed.rows))
+        check("missing controls carry commit-pinned registration evidence", "VGUI control registration: ControlProbeEmpty" in controls and
+              f"/blob/{revision}/" in controls and "controls.lua#L" in controls)
+        index_requests_before_cache_flow = state["requests"].count("~pagelist")
+        (root / "pages.txt").write_text("Global.Probe\n", encoding="utf-8")
+        result = cli("clean snapshot", "check-list", "pages.txt", "--output-report", "clean.html")
+        clean = (root / "clean.html").read_text(encoding="utf-8") if (root / "clean.html").exists() else ""
+        check("findings are successful and evidence pins committed line", result.returncode == 0 and
+              f"/blob/{revision}/garrysmod/lua/probe.lua#L1" in clean)
+        (root / "realm.txt").write_text("Global.RealmProbe\n", encoding="utf-8")
+        result = cli("realm evidence identity", "check-list", "realm.txt", "--output-report", "realm.html")
+        realm_report = (root / "realm.html").read_text(encoding="utf-8") if (root / "realm.html").exists() else ""
+        check("realm evidence keeps the selected definition's file", result.returncode == 0 and
+              f"/blob/{revision}/garrysmod/lua/server/realm.lua#L1" in realm_report and
+              f"/blob/{revision}/garrysmod/lua/client/realm.lua#L1" not in realm_report)
+        source.write_text("\n\n\n\nfunction Probe() end\n", encoding="utf-8")
+        (lua / "untracked.lua").write_bytes(b"\xff")
+        result = cli("dirty snapshot", "check-list", "pages.txt", "--output-report", "dirty.html")
+        dirty = (root / "dirty.html").read_text(encoding="utf-8") if (root / "dirty.html").exists() else ""
+        check("dirty and untracked files cannot change committed evidence", result.returncode == 0 and clean == dirty)
+        check("valid cache reused after fresh index", state["requests"].count("Global.Probe") == 1 and
+              state["requests"].count("~pagelist") == index_requests_before_cache_flow + 3)
+        state["version"] = 2
+        state["pages"]["Global.Probe"]["markup"] = "<function name='Probe'><file line='1'>lua/probe.lua</file></function>"
+        result = cli("stale cache", "check", "Global.Probe")
+        check("changed index refetches stale page", result.returncode == 0 and
+              "No discrepancies detected" in result.stdout and state["requests"].count("Global.Probe") == 2)
+        for address, title in [("Review:A", "Colon page"), ("Review_A", "Underscore page"),
+                               ("Review:A", "Colon page"), ("Review_A", "Underscore page")]:
+            result = cli("cache collision", "check", address)
+            check(f"correct cache identity {address}", result.returncode == 0 and title in result.stdout)
+        check("colliding legacy names each downloaded once", state["requests"].count("Review:A") == 1 and
+              state["requests"].count("Review_A") == 1)
+        result = cli("case-sensitive page identity", "check", "Global.probe")
+        check("Windows cache preserves case-sensitive identity", result.returncode == 0 and
+              "No discrepancies detected" in result.stdout and state["requests"].count("Global.probe") == 1)
+        second = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        second_thread = threading.Thread(target=second.serve_forever, daemon=True)
+        second_thread.start()
+        original_url = url
+        try:
+            url = f"http://127.0.0.1:{second.server_port}"
+            state["pages"]["Review:A"]["title"] = "Other origin page"
+            result = cli("cache origin isolation", "check", "Review:A")
+            check("different origins cannot share cached pages", result.returncode == 0 and
+                  "Other origin page" in result.stdout and state["requests"].count("Review:A") == 2)
+        finally:
+            url = original_url
+            state["pages"]["Review:A"]["title"] = "Colon page"
+            second.shutdown()
+            second.server_close()
+            second_thread.join()
+        for path in (root / "cache").glob("v2-*.json"):
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            if entry["requested_address"] == "Global.Probe":
+                entry["requested_address"] = "DifferentPage"
+                path.write_text(json.dumps(entry), encoding="utf-8")
+        before = state["requests"].count("Global.Probe")
+        result = cli("mismatched cache payload", "check", "Global.Probe")
+        check("payload identity mismatch forces refresh", result.returncode == 0 and
+              state["requests"].count("Global.Probe") == before + 1)
+        state["index_status"] = 503
+        result = cli("index failure", "check", "Global.Probe")
+        check("index failure does not silently reuse cache", result.returncode != 0 and "503" in result.stderr)
+        state["index_status"] = 200
+        result = cli("single page HTTP failure", "check", "Failure")
+        check("failed single check exits nonzero", result.returncode != 0 and "500" in result.stderr)
+        (root / "pages.txt").write_text("Global.Probe\nFailure\n", encoding="utf-8")
+        result = cli("partial batch", "check-list", "pages.txt", "--output-report", "partial.html")
+        partial = (root / "partial.html").read_text(encoding="utf-8") if (root / "partial.html").exists() else ""
+        check("partial batch retains report and exits nonzero", result.returncode != 0 and
+              "Failure" in partial and "500" in partial and "Audit incomplete" in result.stderr)
+        (root / "outside.lua").write_text("function Outside() end", encoding="utf-8")
+        result = cli("source path traversal", "check", "Traversal")
+        check("source tags cannot inspect outside files", result.returncode == 0 and
+              "FILE NOT FOUND" in result.stdout and "LINE RANGE DRIFT" not in result.stdout)
+        (root / "oversized.txt").write_text("Oversized\n", encoding="utf-8")
+        result = cli("oversized range", "check-list", "oversized.txt", "--output-report", "oversized.html")
+        check("untrusted line numbers cannot overflow severity scoring", result.returncode == 0 and
+              (root / "oversized.html").exists())
+        source.write_bytes(b"\xff\xfe\xff")
+        git("add", "garrysmod/lua/probe.lua")
+        git("commit", "-qm", "invalid encoding")
+        result = cli("invalid committed encoding", "scan", "--limit", "0", "--output-report", "invalid.html")
+        check("unreadable committed source fails coverage", result.returncode != 0 and
+              "Cannot index committed source" in result.stderr and not (root / "invalid.html").exists())
+        source.write_text("function Probe(\n", encoding="utf-8")
+        git("add", "garrysmod/lua/probe.lua")
+        git("commit", "-qm", "invalid syntax")
+        result = cli("invalid committed syntax", "scan", "--limit", "0", "--output-report", "syntax.html")
+        check("parser errors fail coverage", result.returncode != 0 and "Incomplete source analysis" in result.stderr)
+        source.write_text(original, encoding="utf-8")
+        git("add", "garrysmod/lua/probe.lua")
+        git("commit", "-qm", "restore source")
+        git("remote", "set-url", "origin", str(root / "absent-remote"))
+        result = cli("explicit pull failure", "--pull", "scan", "--limit", "0")
+        check("failed requested pull stops audit", result.returncode != 0 and "git pull failed" in result.stderr)
+        if args.repo:
+            before = len(state["requests"])
+            result = cli("real repository source coverage", "scan", "--limit", "0",
+                         "--output-report", "real-source.html", source_repo=args.repo.resolve())
+            check("real committed repository indexes without HTTP", result.returncode == 0 and
+                  len(state["requests"]) == before)
+        result = run("HTML summary tool", ["python", str(project / "scripts/analyze_report.py"), "clean.html"])
+        check("summary reads current HTML", result.returncode == 0 and "Global.Probe" in result.stdout)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        record("summary", failures=failures)
+        log.close()
+        print(json.dumps({"log": str(log_path), "failures": failures}))
+    return bool(failures)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
