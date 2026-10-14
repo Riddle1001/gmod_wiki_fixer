@@ -159,11 +159,6 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
             .map(|(_, value, _)| *value)
             .unwrap_or(0)
     };
-    let total = data.source_issues.len()
-        + data.findings.len()
-        + data.missing_pages.len()
-        + data.unresolved.len()
-        + data.failed.len();
     let load_findings = data
         .findings
         .iter()
