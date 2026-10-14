@@ -317,9 +317,22 @@ impl FileIndex {
             .iter()
             .filter(|def| {
                 def.base_name == query_name
-                    && same_symbol_parent(def.parent.as_deref(), query_parent.as_deref())
+                    && (same_symbol_parent(def.parent.as_deref(), query_parent.as_deref())
+                        || contextual_script_parent(
+                            &self.relative_path,
+                            def.parent.as_deref(),
+                            query_parent.as_deref(),
+                        ))
             })
             .collect();
+        // A prototype alias must identify one implementation in the tagged file.
+        if matches.len() > 1
+            && matches
+                .iter()
+                .any(|def| !same_symbol_parent(def.parent.as_deref(), query_parent.as_deref()))
+        {
+            return None;
+        }
         if let Some(realm) = preferred_realm {
             if let Some(def) = matches.iter().find(|def| def.realm == realm).or_else(|| {
                 matches
@@ -349,6 +362,15 @@ pub fn normalize_symbol_query(name: &str, parent: Option<&str>) -> (Option<Strin
         parent.filter(|parent| parent != "Global" && parent != "_G"),
         name,
     )
+}
+
+// Script prototypes are aliases only within the explicitly tagged entity/weapon file.
+// Revisit if wiki pages need inherited implementations from multiple script owners;
+// that requires an explicit inheritance model, never a repository-wide ENT alias.
+pub fn contextual_script_parent(path: &str, source: Option<&str>, wiki: Option<&str>) -> bool {
+    let path = path.replace('\\', "/");
+    (source == Some("ENT") && wiki == Some("ENTITY") && path.contains("/entities/"))
+        || (source == Some("SWEP") && wiki == Some("WEAPON") && path.contains("/weapons/"))
 }
 
 pub fn same_symbol_parent(left: Option<&str>, right: Option<&str>) -> bool {

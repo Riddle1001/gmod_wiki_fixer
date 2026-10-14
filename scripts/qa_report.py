@@ -33,6 +33,16 @@ with sync_playwright() as p:
         from urllib.parse import quote
         page.goto(f'http://127.0.0.1:{server.server_port}/{quote(args.report.name)}')
         result = page.evaluate((root / 'scripts/report_browser_checks.js').read_text(encoding='utf-8-sig'))
+        # Printing must expose the complete record even when a focused view is active.
+        page.emulate_media(media='print')
+        print_check = page.evaluate("""() => ({
+            recordVisible: getComputedStyle(document.getElementById('source-data')).display !== 'none',
+            coverageVisible: getComputedStyle(document.getElementById('coverage')).display !== 'none',
+            queueHidden: getComputedStyle(document.getElementById('review')).display === 'none'
+        })""")
+        result['results'].append({'name':'print retains complete report', 'passed':all(print_check.values()), 'detail':print_check})
+        result['passed'] = result['passed'] and all(print_check.values())
+        page.emulate_media(media='screen')
         page.screenshot(path=str(args.output / 'desktop.png'), full_page=True)
         page.set_viewport_size({'width':390,'height':844})
         page.screenshot(path=str(args.output / 'mobile.png'), full_page=True)

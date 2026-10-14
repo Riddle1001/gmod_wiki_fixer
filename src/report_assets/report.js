@@ -1,8 +1,13 @@
 ﻿(() => {
   'use strict';
   const groups = [
+    ['fixes', 'Fixes', 'Broken links, invalid source paths, and concrete API discrepancies.', 'Views'],
+    ['maintenance', 'Source maintenance', 'Exact line accuracy, replacement paths, and source or realm tags.', ''],
+    ['opportunities', 'Documentation opportunities', 'Supported missing-page candidates and optional example contributions.', ''],
+    ['diagnostics', 'Audit diagnostics', 'Incomplete checks and static load-path review; these are not confirmed wiki defects.', ''],
+    ['examples', 'Example opportunities', 'Pages without example blocks. Start with a small batch of useful snippets.', 'Contributions'],
     ['all', 'All findings', 'All findings and incomplete checks, with their original evidence.', ''],
-    ['missing', 'Missing pages', 'Exported APIs absent after alias, inheritance, redirect, and live-page checks.', 'Documentation'],
+    ['missing', 'Missing page candidates', 'Exported APIs absent after alias, inheritance, redirect, and live-page checks.', 'Documentation'],
     ['missing-controls', 'Undocumented controls', 'Named VGUI controls with no overview page after index, alias, redirect, and live-page checks.', ''],
     ['missing-source', 'Missing source tags', 'Documented APIs with Lua implementations but no source tag.', 'Source references'],
     ['line-ranges', 'Line range drift', 'Wiki ranges that differ from the exact function boundaries.', ''],
@@ -20,6 +25,15 @@
     ['unresolved', 'Unresolved sources', 'Source definitions that could not be matched confidently. Not clean results.', ''],
     ['failed', 'Failed checks', 'Checks interrupted by fetch, parse, or resolution errors. Not missing or clean.', ''],
   ];
+  // Views classify existing records; HTML remains the authoritative complete record.
+  // Revisit if another presentation consumer needs this classification in a shared format.
+  const views = {
+    fixes: ['dead-files', 'realm-mismatches', 'malformed-source', 'identity', 'signature', 'returns', 'broken-link'],
+    maintenance: ['line-ranges', 'wrong-files', 'missing-source', 'missing-realms'],
+    opportunities: ['missing', 'missing-controls', 'examples'],
+    diagnostics: ['unresolved', 'failed', 'unverified-link', 'load-realm']
+  };
+  const belongs = (entry, key) => key === 'all' || (views[key] || [key]).includes(entry.key);
   const labels = new Map(groups.map(g => [g[0], g[1]]));
   const $ = id => document.getElementById(id);
   const liveClock = $('live-clock');
@@ -36,6 +50,12 @@
     weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
     timeZone: 'UTC', hourCycle: 'h23'
   });
+  const completed = $('audit-completed');
+  if (completed) {
+    const date = new Date(Number(completed.dataset.epoch) * 1000);
+    completed.dateTime = date.toISOString();
+    completed.textContent = localDateFormatter.format(date);
+  }
   function updateRefreshClock() {
     const currentTime = new Date();
     liveClock.dateTime = currentTime.toISOString();
@@ -50,6 +70,7 @@
         currentTime.getUTCFullYear(), currentTime.getUTCMonth(), currentTime.getUTCDate() + 1, 0, 17
       ));
     }
+    if ($('refresh-summary')) $('refresh-summary').textContent = `Next: ${localDateFormatter.format(nextRefresh)}`;
     nextRefreshLocal.dateTime = nextRefresh.toISOString();
     nextRefreshLocal.textContent = localDateFormatter.format(nextRefresh);
     nextRefreshUtc.textContent = `${utcDateFormatter.format(nextRefresh)} UTC`;
@@ -90,12 +111,12 @@
       cells.some(cell => [...cell.querySelectorAll('.evidence a')].some(link => /\/gamemodes\/base\//i.test(link.href)));
     return {index, key, panelRelated, baseRelated, source, metadata, cells, pageCell, pageLink,
       page: pageLink?.textContent || pageCell.textContent,
-      reason: reason.trim(), score: source ? BigInt(cells[0].textContent.trim() || '0') : 0n,
+      reason: reason.trim(), views: Object.hasOwn(pageViews, pageLink?.textContent || pageCell.textContent) ? BigInt(pageViews[pageLink?.textContent || pageCell.textContent]) : null,
       search: (row.textContent + ' ' + labels.get(key)).toLocaleLowerCase()};
   });
-  const count = key => key === 'all' ? entries.length : entries.filter(e => e.key === key).length;
+  const count = key => entries.filter(e => belongs(e, key)).length;
   for (const [key, title, , group] of groups) {
-    if (group) $('category-list').append(create('p', 'filter-group', group));
+
     const link = create('a', 'category-link');
     link.href = '#' + key;
     link.dataset.key = key;
@@ -106,7 +127,7 @@
     $('category-picker').append(option);
   }
   $('queue-total').textContent = entries.length.toLocaleString();
-  let active = 'all', page = 0, expanded = false;
+  let active = 'fixes', page = 0, expanded = false;
   const pageSize = 50;
   const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'});
   const openEntries = new Set();
@@ -151,9 +172,9 @@
       if (evidenceCell.textContent.trim()) appendClone(evidence, evidenceCell);
       else evidence.append(create('p', 'muted', 'No additional source evidence was recorded.'));
     } else {
-      evidence.append(create('p', 'muted', entry.key === 'failed' ? 'This check is incomplete. Retry it before drawing a conclusion.' : 'No confident source match was established.'));
+      evidence.append(create('p', 'muted', entry.key === 'failed' ? 'This check is incomplete. Retry it before drawing a conclusion.' : entry.key === 'unresolved' ? entry.reason : 'No confident source match was established.'));
     }
-    body.append(evidence);
+    if (!['examples', 'unresolved'].includes(entry.key)) body.append(evidence);
     const actions = create('div', 'finding-actions');
     if (entry.pageLink) {
       const link = entry.pageLink.cloneNode(true);
@@ -161,13 +182,36 @@
       link.className = 'wiki-action';
       actions.append(link);
     }
-    if (entry.source) actions.append(create('span', 'priority-note', `Priority score ${entry.score.toLocaleString()}`));
+    actions.append(create('span', 'priority-note', `Page views: ${entry.views === null ? 'unavailable' : entry.views.toLocaleString()}`));
     body.append(actions);
     detail.append(body);
+    return detail;
+  }
+  function pageCard(items) {
+    const first = items[0];
+    const detail = card(first);
+    detail.dataset.entry = first.page;
+    detail.querySelector('.finding-type').textContent = [...new Set(items.map(e => labels.get(e.key)))].join(' · ');
+    detail.querySelector('.finding-preview').textContent = `Page views: ${first.views === null ? 'unavailable' : first.views.toLocaleString()} · ` + (items.length === 1 ? first.reason : `${items.length} findings on this page`);
+    for (const item of items.slice(1)) {
+      const child = card(item);
+      const body = child.querySelector('.finding-body');
+      body.prepend(create('h4', 'finding-type', labels.get(item.key)));
+      detail.append(body);
+    }
+    detail.open = expanded || openEntries.has(first.page);
     detail.addEventListener('toggle', () => {
-      if (detail.open) openEntries.add(entry.index); else openEntries.delete(entry.index);
+      if (detail.open) openEntries.add(first.page); else openEntries.delete(first.page);
     });
     return detail;
+  }
+  function saveState() {
+    const params = new URLSearchParams();
+    if ($('search').value) params.set('q', $('search').value);
+    if ($('hide-panels').checked) params.set('panels', 'hide');
+    if ($('hide-base').checked) params.set('base', 'hide');
+    if ($('sort').value !== 'priority') params.set('sort', $('sort').value);
+    history.replaceState(null, '', `${location.pathname}${params.size ? '?' + params : ''}${location.hash || '#fixes'}`);
   }
   function render() {
     const terms = $('search').value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -175,43 +219,54 @@
     const hideBase = $('hide-base').checked;
     const visible = entries.filter(e => (!hidePanels || !e.panelRelated) && (!hideBase || !e.baseRelated));
     for (const [key, title] of groups) {
-      const total = key === 'all' ? visible.length : visible.filter(e => e.key === key).length;
+      const total = visible.filter(e => belongs(e, key)).length;
       document.querySelector(`.category-link[data-key="${key}"] .category-count`).textContent = total.toLocaleString();
       $('category-picker').querySelector(`option[value="${key}"]`).textContent = `${title} (${total.toLocaleString()})`;
     }
-    $('queue-total').textContent = visible.length.toLocaleString();
+    $('queue-total').textContent = `${visible.filter(e => belongs(e, active)).length.toLocaleString()} findings`;
+    const section = views[active] ? active : Object.keys(views).find(key => views[key].includes(active));
+    for (const link of document.querySelectorAll('.category-link')) {
+      link.hidden = active !== 'all' && !views[link.dataset.key] && link.dataset.key !== 'all' && !(views[section] || []).includes(link.dataset.key);
+    }
     const baseTotal = entries.filter(e => e.baseRelated).length;
     $('base-filter-count').textContent = `${baseTotal.toLocaleString()} ${hideBase ? 'hidden' : 'findings'}`;
     const panelTotal = entries.filter(e => e.panelRelated).length;
     $('panel-filter-count').textContent = `${panelTotal.toLocaleString()} ${hidePanels ? 'hidden' : 'findings'}`;
-    const filtered = visible.filter(e => (active === 'all' || active === e.key) && terms.every(term => e.search.includes(term)));
+    const filtered = visible.filter(e => belongs(e, active) && terms.every(term => e.search.includes(term)));
     const sort = $('sort').value;
     filtered.sort((a, b) => {
-      if (sort === 'priority' && a.score !== b.score) return a.score > b.score ? -1 : 1;
+      if (sort === 'priority' && a.views !== b.views) { if (a.views === null) return 1; if (b.views === null) return -1; return a.views > b.views ? -1 : 1; }
       if (sort === 'category') { const order = collator.compare(labels.get(a.key), labels.get(b.key)); if (order) return order; }
       return collator.compare(a.page, b.page) || a.index - b.index;
     });
-    page = Math.min(page, Math.max(0, Math.ceil(filtered.length / pageSize) - 1));
+    const byPage = new Map();
+    for (const entry of filtered) {
+      if (!byPage.has(entry.page)) byPage.set(entry.page, []);
+      byPage.get(entry.page).push(entry);
+    }
+    const pageGroups = [...byPage.values()];
+    page = Math.min(page, Math.max(0, Math.ceil(pageGroups.length / pageSize) - 1));
     const from = page * pageSize;
-    $('finding-list').replaceChildren(...filtered.slice(from, from + pageSize).map(card));
+    $('finding-list').replaceChildren(...pageGroups.slice(from, from + pageSize).map(pageCard));
     $('empty-state').hidden = filtered.length !== 0;
     $('empty-state').querySelector('h3').textContent = entries.length === 0 ? 'Nothing to review in this run.' : 'No matching findings.';
     $('empty-state').querySelector('p').textContent = entries.length === 0 ? 'Check coverage for the scope and limits of this result.' : 'Try a different search or choose another category.';
-    $('result-count').textContent = filtered.length ? `${from + 1}–${Math.min(from + pageSize, filtered.length)} of ${filtered.length.toLocaleString()} items` : '0 matching items';
-    $('page-position').textContent = filtered.length ? `Page ${page + 1} of ${Math.ceil(filtered.length / pageSize)}` : 'No results';
+    $('result-count').textContent = filtered.length ? `${from + 1}–${Math.min(from + pageSize, pageGroups.length)} of ${pageGroups.length.toLocaleString()} pages · ${filtered.length.toLocaleString()} findings` : '0 matching items';
+    $('page-position').textContent = filtered.length ? `Page ${page + 1} of ${Math.ceil(pageGroups.length / pageSize)}` : 'No results';
     $('previous').disabled = page === 0;
-    $('next').disabled = from + pageSize >= filtered.length;
+    $('next').disabled = from + pageSize >= pageGroups.length;
     $('expand-all').disabled = filtered.length === 0;
     $('expand-all').textContent = expanded ? 'Collapse this page' : 'Expand this page';
     $('expand-all').setAttribute('aria-pressed', String(expanded));
-    $('reset').hidden = active === 'all' && !terms.length && !hidePanels && !hideBase;
+    saveState();
+    $('reset').hidden = active === 'fixes' && !terms.length && !hidePanels && !hideBase;
   }
   function route() {
     const aliases = {'overview':'all', 'missing-pages':'missing', 'load-realms':'load-realm', 'all-metrics':'coverage', 'source-summary':'all', 'source-issues':'all', 'metadata':'all'};
-    let key = location.hash.slice(1) || 'all';
+    let key = location.hash.slice(1) || 'fixes';
     key = aliases[key] || key;
     const coverage = key === 'coverage';
-    if (!coverage && !labels.has(key)) key = 'all';
+    if (!coverage && !labels.has(key)) key = 'fixes';
     if (!coverage) active = key;
     $('review').hidden = coverage;
     $('coverage').hidden = !coverage;
@@ -234,12 +289,12 @@
   $('hide-panels').addEventListener('change', () => { page = 0; render(); });
   $('sort').addEventListener('change', () => { page = 0; render(); });
   $('category-picker').addEventListener('change', () => { location.hash = $('category-picker').value; });
-  $('reset').addEventListener('click', () => { $('hide-panels').checked = false; $('hide-base').checked = false; $('search').value = ''; page = 0; if (active !== 'all') location.hash = 'all'; else render(); $('search').focus(); });
+  $('reset').addEventListener('click', () => { $('hide-panels').checked = false; $('hide-base').checked = false; $('search').value = ''; page = 0; if (active !== 'fixes') location.hash = 'fixes'; else render(); $('search').focus(); });
   $('expand-all').addEventListener('click', () => {
     expanded = !expanded;
     for (const detail of $('finding-list').children) {
       detail.open = expanded;
-      if (expanded) openEntries.add(Number(detail.dataset.entry)); else openEntries.delete(Number(detail.dataset.entry));
+      if (expanded) openEntries.add(detail.dataset.entry); else openEntries.delete(detail.dataset.entry);
     }
     $('expand-all').textContent = expanded ? 'Collapse this page' : 'Expand this page';
     $('expand-all').setAttribute('aria-pressed', String(expanded));
@@ -251,6 +306,11 @@
     }
   });
   addEventListener('hashchange', route);
+  const initial = new URLSearchParams(location.search);
+  $('search').value = initial.get('q') || '';
+  $('hide-panels').checked = initial.get('panels') === 'hide';
+  $('hide-base').checked = initial.get('base') === 'hide';
+  if (['priority', 'page', 'category'].includes(initial.get('sort'))) $('sort').value = initial.get('sort');
   route();
   // Only hide the fallback record after successful initialization.
   document.documentElement.classList.add('js');

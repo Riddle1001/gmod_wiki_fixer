@@ -1,6 +1,6 @@
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -55,6 +55,7 @@ pub struct WikiClient {
     reference_cache: HashMap<String, LinkResolution>,
     reference_pages: HashMap<String, WikiPage>,
     pub reference_requests: usize,
+    pub page_views: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +97,9 @@ pub(crate) fn test_server(
                     Err(error) => panic!("{}", error),
                 }
             };
+            // Accepted sockets inherit the listener's nonblocking mode on Windows.
+            // A timeout alone does not make read wait for the HTTP request.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -142,6 +146,7 @@ impl WikiClient {
             reference_cache: HashMap::new(),
             reference_pages: HashMap::new(),
             reference_requests: 0,
+            page_views: BTreeMap::new(),
         }
     }
 
@@ -190,6 +195,10 @@ impl WikiClient {
         for item in &summaries {
             map.insert(item.address.clone(), item.update_count);
         }
+        self.page_views = summaries
+            .iter()
+            .map(|item| (item.address.clone(), item.view_count))
+            .collect();
         self.pagelist_cache = Some(map);
         self.reference_cache.clear();
         self.reference_pages.clear();

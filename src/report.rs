@@ -59,6 +59,7 @@ fn source_category(kind: &DiscrepancyKind) -> &'static str {
 }
 
 pub struct ReportData {
+    pub page_views: std::collections::BTreeMap<String, u64>,
     pub panel_names: Vec<String>,
     pub metrics: Vec<(String, usize, String)>,
     pub findings: Vec<AuditFinding>,
@@ -115,6 +116,7 @@ fn category(kind: FindingKind) -> &'static str {
         FindingKind::IdentityConflict => "identity",
         FindingKind::SignatureDrift => "signature",
         FindingKind::ReturnDrift => "returns",
+        FindingKind::ExampleOpportunity => "examples",
         FindingKind::LoadRealmConflict => "load-realm",
     }
 }
@@ -168,12 +170,41 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
         .filter(|f| f.kind == FindingKind::LoadRealmConflict)
         .count();
     let metadata_count = data.findings.len() - load_findings;
+    let actionable = data
+        .source_issues
+        .iter()
+        .filter(|issue| {
+            matches!(
+                issue.kind,
+                DiscrepancyKind::FileNotFound { .. } | DiscrepancyKind::RealmMismatch { .. }
+            )
+        })
+        .count()
+        + data
+            .findings
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.kind,
+                    FindingKind::BrokenLink
+                        | FindingKind::MalformedSource
+                        | FindingKind::IdentityConflict
+                        | FindingKind::SignatureDrift
+                        | FindingKind::ReturnDrift
+                )
+            })
+            .count();
     let mut report = String::with_capacity(32_000);
     report.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light\"><title>Garry's Mod ? Documentation review</title><style>");
     report.push_str(STYLE);
-    report.push_str("</style></head><body><a class=\"skip-link\" href=\"#review\">Skip to findings</a><header class=\"masthead\"><div class=\"masthead-inner\"><a class=\"brand\" href=\"#all\"><span class=\"brand-mark\" aria-hidden=\"true\">g.</span><span>Garry's Mod<span class=\"brand-subtitle\">WIKI AUDIT</span></span></a><div class=\"snapshot\"><span class=\"snapshot-dot\" aria-hidden=\"true\"></span><span>Source snapshot</span>");
+    report.push_str("</style></head><body><a class=\"skip-link\" href=\"#review\">Skip to findings</a><header class=\"masthead\"><div class=\"masthead-inner\"><a class=\"brand\" href=\"#fixes\"><span class=\"brand-mark\" aria-hidden=\"true\">g.</span><span>Garry's Mod<span class=\"brand-subtitle\">WIKI AUDIT</span></span></a><div class=\"snapshot\"><span class=\"snapshot-dot\" aria-hidden=\"true\"></span><span>Source snapshot</span>");
     write!(report, "<a href=\"{}/tree/{}\" target=\"_blank\" rel=\"noopener noreferrer\"><code>{}</code> ?</a></div></div></header>", escape(&snapshot.github_url), escape(&snapshot.revision), escape(&snapshot.revision.chars().take(12).collect::<String>())).unwrap();
-    report.push_str("<main class=\"shell\"><header class=\"intro\"><div><p class=\"eyebrow\">DOCUMENTATION / QUALITY REVIEW</p><h1>Every finding. <span>In context.</span></h1><p class=\"intro-copy\">Review the gaps between the wiki and its Lua source.<br class=\"desktop-break\"> Follow the evidence. Decide what needs attention.</p></div><div class=\"intro-note\"><span class=\"note-rule\"></span><strong>Built for a closer look.</strong><p>Exact source lines. Clear comparisons.<br>One place to work through the details.</p><a href=\"#coverage\">About this audit <span aria-hidden=\"true\">?</span></a></div></header><section class=\"refresh-panel\" aria-labelledby=\"refresh-heading\"><h2 id=\"refresh-heading\" class=\"sr-only\">Automatic report refresh</h2><div class=\"refresh-item\"><span class=\"eyebrow\">YOUR LOCAL TIME</span><time id=\"live-clock\" aria-label=\"Current local time\" aria-live=\"off\">--:--:--</time></div><div class=\"refresh-item\"><span class=\"eyebrow\">NEXT SCHEDULED REFRESH</span><time id=\"next-refresh-local\">Calculating...</time><span id=\"next-refresh-utc\" class=\"refresh-meta\">00:17, 08:17 and 16:17 UTC daily</span></div><div class=\"refresh-item\"><span class=\"eyebrow\">COUNTDOWN</span><span id=\"refresh-countdown\" class=\"refresh-countdown\" aria-live=\"off\">--:--:--</span></div><p class=\"refresh-note\">GitHub may delay scheduled starts; the report updates after a successful run.</p><noscript><p class=\"refresh-note\">The live clock and countdown require JavaScript.</p></noscript></section><div class=\"stats\" aria-label=\"Audit summary\">");
+    let completed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    write!(report, "<p class=\"audit-completed shell\">Last completed audit: <time id=\"audit-completed\" data-epoch=\"{completed}\">Unix time {completed} (UTC)</time></p>").unwrap();
+    report.push_str("<main class=\"shell\"><header class=\"intro\"><div><p class=\"eyebrow\">DOCUMENTATION / QUALITY REVIEW</p><h1>Fix the wiki. <span>One page at a time.</span></h1><p class=\"intro-copy\">Review the gaps between the wiki and its Lua source.<br class=\"desktop-break\"> Follow the evidence. Decide what needs attention.</p></div><div class=\"intro-note\"><span class=\"note-rule\"></span><strong>Built for a closer look.</strong><p>Exact source lines. Clear comparisons.<br>One place to work through the details.</p><a href=\"#coverage\">About this audit <span aria-hidden=\"true\">?</span></a></div></header><details class=\"refresh-details\"><summary>Refresh schedule <span id=\"refresh-summary\">Every 8 hours</span></summary><section class=\"refresh-panel\" aria-labelledby=\"refresh-heading\"><h2 id=\"refresh-heading\" class=\"sr-only\">Automatic report refresh</h2><div class=\"refresh-item\"><span class=\"eyebrow\">YOUR LOCAL TIME</span><time id=\"live-clock\" aria-label=\"Current local time\" aria-live=\"off\">--:--:--</time></div><div class=\"refresh-item\"><span class=\"eyebrow\">NEXT SCHEDULED REFRESH</span><time id=\"next-refresh-local\">Calculating...</time><span id=\"next-refresh-utc\" class=\"refresh-meta\">00:17, 08:17 and 16:17 UTC daily</span></div><div class=\"refresh-item\"><span class=\"eyebrow\">COUNTDOWN</span><span id=\"refresh-countdown\" class=\"refresh-countdown\" aria-live=\"off\">--:--:--</span></div><p class=\"refresh-note\">GitHub may delay scheduled starts; the report updates after a successful run.</p><noscript><p class=\"refresh-note\">The live clock and countdown require JavaScript.</p></noscript></section></details><div class=\"stats\" aria-label=\"Audit summary\">");
     for (label, count, note, href) in [
         (
             "Pages checked",
@@ -188,26 +219,32 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
             "#coverage",
         ),
         (
-            "Items to review",
-            total,
-            "Findings, unresolved & failed",
-            "#all",
+            "Actionable findings",
+            actionable,
+            "Opportunities & diagnostics counted separately",
+            "#fixes",
         ),
         (
-            "Failed checks",
-            data.failed.len(),
-            "Not counted as clean or missing",
-            "#failed",
+            "Incomplete checks",
+            data.failed.len()
+                + data.unresolved.len()
+                + data
+                    .findings
+                    .iter()
+                    .filter(|f| f.kind == FindingKind::UnverifiedLink)
+                    .count(),
+            "Not confirmed wiki defects",
+            "#diagnostics",
         ),
     ] {
         write!(report, "<a class=\"stat\" href=\"{href}\"><span>{label}</span><strong>{count}</strong><small>{note}</small></a>").unwrap();
     }
-    report.push_str("</div><nav aria-label=\"Report sections\"><a class=\"tab\" id=\"review-tab\" href=\"#all\">Findings <span class=\"total-badge\">");
-    write!(report, "{total}</span></a><a class=\"tab\" id=\"coverage-tab\" href=\"#coverage\">Coverage & methodology</a><span class=\"nav-note\">Read-only report ? commit-pinned evidence</span></nav>").unwrap();
+    report.push_str("</div><nav aria-label=\"Report sections\"><a class=\"tab\" id=\"review-tab\" href=\"#fixes\">Fixes <span class=\"total-badge\">");
+    write!(report, "{actionable}</span></a><a class=\"tab\" id=\"coverage-tab\" href=\"#coverage\">Coverage & methodology</a><a class=\"tab\" href=\"#maintenance\">Source maintenance</a><a class=\"tab\" href=\"#opportunities\">Contribute</a><a class=\"tab\" href=\"#diagnostics\">Diagnostics</a><span class=\"nav-note\">Read-only report ? commit-pinned evidence</span></nav>").unwrap();
     // Tables remain the canonical rendered record for no-JS reading, printing and
     // the HTML summary tool. JS enhances that record into a paged review list.
     // Revisit if another consumer needs a shared structured report format.
-    report.push_str(r##"<div id="review" class="workbench enhanced-only"><aside class="filters" aria-label="Finding categories"><div class="filter-heading"><span>REVIEW QUEUE</span><span id="queue-total"></span></div><div id="category-list"></div><div class="rail-note"><strong>Evidence, not automatic edits.</strong><p>Contract and realm findings need human judgment. Uncertain checks stay visible.</p><a href="#coverage">See scope & limitations ?</a></div></aside><div class="queue"><div class="queue-heading"><div><p class="eyebrow" id="queue-eyebrow">THE COMPLETE PICTURE</p><h2 id="queue-title">All findings</h2></div><button type="button" id="expand-all" aria-pressed="false">Expand this page</button></div><p id="queue-description">All findings and incomplete checks, with their original evidence.</p><div class="queue-tools"><label class="search-box"><span class="sr-only">Search all findings</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="search" placeholder="Search pages, symbols, files?" autocomplete="off"><kbd aria-hidden="true">/</kbd></label><label class="sort-box"><span class="sr-only">Sort findings</span><select id="sort"><option value="priority">Priority order</option><option value="page">Page name ? A?Z</option><option value="category">Category ? A?Z</option></select></label></div><label class="panel-filter"><input type="checkbox" id="hide-panels"><span><strong>Hide VGUI &amp; panel findings</strong><small>Across every category: controls, panel methods, VGUI and Derma APIs.</small></span><span id="panel-filter-count" class="panel-filter-count"></span></label><label class="panel-filter"><input type="checkbox" id="hide-base"><span><strong>Hide base gamemode findings</strong><small>Across every category: findings with gamemodes/base source evidence.</small></span><span id="base-filter-count" class="panel-filter-count"></span></label><div class="mobile-filter"><label for="category-picker">Category</label><select id="category-picker"></select></div><div class="results-line"><span id="result-count" role="status" aria-live="polite"></span><button type="button" id="reset">Clear filters</button></div><div id="finding-list"></div><div id="empty-state" hidden><span class="empty-mark" aria-hidden="true">?</span><h3>No findings here.</h3><p>Choose another category or clear your search.</p></div><div class="pagination"><button type="button" id="previous">? Previous</button><span id="page-position" aria-live="polite"></span><button type="button" id="next">Next ?</button></div></div></div><section id="coverage" aria-labelledby="coverage-heading"><div class="coverage-intro"><p class="eyebrow">HOW TO READ THIS REPORT</p><h2 id="coverage-heading">The boundaries of the audit.</h2><p>Findings are evidence for review. A static check can identify a discrepancy without proving what happens at runtime.</p></div><div class="method-grid"><article><span class="method-number">01 / SOURCE</span><h3>A fixed point of reference.</h3><p>GitHub evidence points to the recorded commit and exact source lines. Uncommitted changes are not included.</p></article><article><span class="method-number">02 / SCOPE</span><h3>Public Lua, with limits.</h3><p>Sandbox and TTT are excluded; the base gamemode and other Lua files remain included. Missing-page candidates exclude private helpers, locals, instance callbacks, ordinary fields, and unresolved dynamic exports. Canonical and inherited documentation covers overrides. Prefix and limit options restrict coverage.</p></article><article><span class="method-number">03 / INTERPRETATION</span><h3>Uncertainty stays visible.</h3><p>Contracts account for method self, varargs, overloads, and optional returns. Dynamic returns and uncertain control flow remain inconclusive. Realm traces establish static load paths, not runtime behavior or the absence of other routes. Failed and unresolved checks are never clean results.</p></article></div><p class="reference-note">Engine roots and realm constants follow the official <a href="https://wiki.facepunch.com/gmod/Lua_Loading_Order" target="_blank" rel="noopener noreferrer">Lua loading order</a>, <a href="https://wiki.facepunch.com/gmod/States" target="_blank" rel="noopener noreferrer">States / Realms</a>, and <a href="https://wiki.facepunch.com/gmod/Global_Variables" target="_blank" rel="noopener noreferrer">Global Variables</a> references.</p><h3 class="metrics-title">All metrics & coverage</h3><div class="table-wrap"><table class="coverage"><caption class="sr-only">All audit metrics</caption><thead><tr><th scope="col">Metric</th><th scope="col">Count</th><th scope="col">Meaning</th></tr></thead><tbody>"##);
+    report.push_str(r##"<div id="review" class="workbench enhanced-only"><aside class="filters" aria-label="Finding categories"><div class="filter-heading"><span>REVIEW QUEUE</span><span id="queue-total"></span></div><div id="category-list"></div><div class="rail-note"><strong>Evidence, not automatic edits.</strong><p>Contract and realm findings need human judgment. Uncertain checks stay visible.</p><a href="#coverage">See scope & limitations ?</a></div></aside><div class="queue"><div class="queue-heading"><div><p class="eyebrow" id="queue-eyebrow">THE COMPLETE PICTURE</p><h2 id="queue-title">All findings</h2></div><button type="button" id="expand-all" aria-pressed="false">Expand this page</button></div><p id="queue-description">All findings and incomplete checks, with their original evidence.</p><div class="queue-tools"><label class="search-box"><span class="sr-only">Search all findings</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="search" placeholder="Search pages, symbols, files?" autocomplete="off"><kbd aria-hidden="true">/</kbd></label><label class="sort-box"><span class="sr-only">Sort findings</span><select id="sort"><option value="priority">Page views — highest first</option><option value="page">Page name ? A?Z</option><option value="category">Category ? A?Z</option></select></label></div><label class="panel-filter"><input type="checkbox" id="hide-panels"><span><strong>Hide VGUI &amp; panel findings</strong><small>Across every category: controls, panel methods, VGUI and Derma APIs.</small></span><span id="panel-filter-count" class="panel-filter-count"></span></label><label class="panel-filter"><input type="checkbox" id="hide-base"><span><strong>Hide base gamemode findings</strong><small>Across every category: findings with gamemodes/base source evidence.</small></span><span id="base-filter-count" class="panel-filter-count"></span></label><div class="mobile-filter"><label for="category-picker">Category</label><select id="category-picker"></select></div><div class="results-line"><span id="result-count" role="status" aria-live="polite"></span><button type="button" id="reset">Clear filters</button></div><div id="finding-list"></div><div id="empty-state" hidden><span class="empty-mark" aria-hidden="true">?</span><h3>No findings here.</h3><p>Choose another category or clear your search.</p></div><div class="pagination"><button type="button" id="previous">? Previous</button><span id="page-position" aria-live="polite"></span><button type="button" id="next">Next ?</button></div></div></div><section id="coverage" aria-labelledby="coverage-heading"><div class="coverage-intro"><p class="eyebrow">HOW TO READ THIS REPORT</p><h2 id="coverage-heading">The boundaries of the audit.</h2><p>Findings are evidence for review. A static check can identify a discrepancy without proving what happens at runtime.</p></div><div class="method-grid"><article><span class="method-number">01 / SOURCE</span><h3>A fixed point of reference.</h3><p>GitHub evidence points to the recorded commit and exact source lines. Uncommitted changes are not included.</p></article><article><span class="method-number">02 / SCOPE</span><h3>Public Lua, with limits.</h3><p>Sandbox, TTT, and menu-only APIs are excluded; the base gamemode and other Lua files remain included. Missing-page candidates exclude metamethods, private helpers, locals, instance callbacks, ordinary fields, and unresolved dynamic exports. Canonical and inherited documentation covers overrides. Prefix and limit options restrict coverage.</p></article><article><span class="method-number">03 / INTERPRETATION</span><h3>Uncertainty stays visible.</h3><p>Contracts account for method self, varargs, overloads, and optional returns. Dynamic returns and uncertain control flow remain inconclusive. Realm traces establish static load paths, not runtime behavior or the absence of other routes. Failed and unresolved checks are never clean results.</p></article></div><p class="reference-note">Engine roots and realm constants follow the official <a href="https://wiki.facepunch.com/gmod/Lua_Loading_Order" target="_blank" rel="noopener noreferrer">Lua loading order</a>, <a href="https://wiki.facepunch.com/gmod/States" target="_blank" rel="noopener noreferrer">States / Realms</a>, and <a href="https://wiki.facepunch.com/gmod/Global_Variables" target="_blank" rel="noopener noreferrer">Global Variables</a> references.</p><h3 class="metrics-title">All metrics & coverage</h3><div class="table-wrap"><table class="coverage"><caption class="sr-only">All audit metrics</caption><thead><tr><th scope="col">Metric</th><th scope="col">Count</th><th scope="col">Meaning</th></tr></thead><tbody>"##);
     for (label, count, description) in &data.metrics {
         write!(
             report,
@@ -238,7 +275,7 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
     section(
         &mut report,
         "missing-pages",
-        "Entirely missing pages",
+        "Missing page candidates",
         data.missing_pages.len(),
         "Exported Lua APIs with no matching wiki page after alias, inheritance, redirect, and live-page checks. Undocumented status still warrants review.",
         &["Page", "Repository evidence"],
@@ -279,7 +316,7 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
             count,
             description,
             &[
-                "Score",
+                "Page views",
                 "Page / symbol",
                 "Wiki value",
                 "Source evidence / expected",
@@ -291,10 +328,15 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
             .iter()
             .filter(|issue| source_category(&issue.kind) == id)
             .collect();
-        issues.sort_by(|a, b| b.score.cmp(&a.score).then(a.page.cmp(&b.page)));
+        issues.sort_by(|a, b| {
+            data.page_views
+                .get(&b.page)
+                .cmp(&data.page_views.get(&a.page))
+                .then(a.page.cmp(&b.page))
+        });
         for issue in issues {
-            write!(report, "<tr data-category=\"{id}\"><td class=\"number\" data-sort=\"{}\">{}</td><td>{}<code class=\"symbol\">{}</code></td><td><code>{}</code></td><td>{}<code class=\"expected\">{}</code></td><td>{}</td></tr>",
-            issue.score, issue.score, page_link(&issue.page), escape(&issue.symbol), escape(&issue.current),
+            write!(report, "<tr data-category=\"{id}\" data-severity-score=\"{}\"><td class=\"number\">{}</td><td>{}<code class=\"symbol\">{}</code></td><td><code>{}</code></td><td>{}<code class=\"expected\">{}</code></td><td>{}</td></tr>",
+            issue.score, data.page_views.get(&issue.page).map(u64::to_string).unwrap_or_else(|| "Unavailable".into()), page_link(&issue.page), escape(&issue.symbol), escape(&issue.current),
             issue.evidence.as_ref().map(|source| sources(snapshot, std::slice::from_ref(source))).unwrap_or_default(),
             escape(&issue.expected), escape(&issue.reason)).unwrap();
         }
@@ -399,6 +441,15 @@ pub fn render(snapshot: &SourceSnapshot, data: &ReportData) -> String {
         .unwrap()
         .replace('<', "\\u003c");
     write!(report, "const registeredPanelNames = {names};\n").unwrap();
+    let views: std::collections::BTreeMap<_, _> = data
+        .page_views
+        .iter()
+        .map(|(page, count)| (page, count.to_string()))
+        .collect();
+    let views = serde_json::to_string(&views)
+        .unwrap()
+        .replace('<', "\\u003c");
+    write!(report, "const pageViews = {views};\n").unwrap();
     report.push_str(SCRIPT);
     report.push_str("</script></body></html>");
     report
@@ -425,6 +476,7 @@ mod tests {
             label: "Source definition".into(),
         };
         let mut data = ReportData {
+            page_views: std::collections::BTreeMap::new(),
             panel_names: vec!["SpawnIcon".into(), "ImageCheckBox".into()],
             metrics: vec![(
                 "Total Pages Checked".into(),
@@ -478,8 +530,19 @@ mod tests {
             finding.target = Some("Global.ReferenceTarget".into());
             data.findings.push(finding);
         }
+        for i in 0..65 {
+            data.page_views.insert(
+                format!("Example.Function{i:03}"),
+                ((i * 17) % 65) as u64 * 100,
+            );
+        }
+        data.page_views.insert(
+            "Example.AVeryLongSymbolNameThatMustWrapOnNarrowScreensAndNeverOverflowTheReport"
+                .into(),
+            9999,
+        );
         let full = render(&snapshot, &data);
-        assert_eq!(full.matches("<tr data-category=").count(), 77);
+        assert_eq!(full.matches("<tr data-category=").count(), 78);
         for kind in FindingKind::ALL {
             assert!(full.contains(kind.label()));
         }
@@ -519,6 +582,7 @@ mod tests {
             label: "api.Test".into(),
         });
         let data = ReportData {
+            page_views: std::collections::BTreeMap::new(),
             panel_names: vec![],
             metrics: vec![("Total Pages Checked".into(), 1, "Pages".into())],
             findings: vec![finding],

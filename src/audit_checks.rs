@@ -12,10 +12,11 @@ pub enum FindingKind {
     SignatureDrift,
     ReturnDrift,
     LoadRealmConflict,
+    ExampleOpportunity,
 }
 
 impl FindingKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::MalformedSource,
         Self::BrokenLink,
         Self::UnverifiedLink,
@@ -23,6 +24,7 @@ impl FindingKind {
         Self::SignatureDrift,
         Self::ReturnDrift,
         Self::LoadRealmConflict,
+        Self::ExampleOpportunity,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -32,6 +34,7 @@ impl FindingKind {
             Self::IdentityConflict => "Function Identity Conflicts",
             Self::SignatureDrift => "Signature Review Findings",
             Self::ReturnDrift => "Return Value Review Findings",
+            Self::ExampleOpportunity => "Example Opportunities",
             Self::LoadRealmConflict => "Load Path Realm Review Findings",
         }
     }

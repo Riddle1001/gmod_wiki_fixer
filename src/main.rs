@@ -373,6 +373,7 @@ fn run_batch_check(
     report_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut data = report::ReportData {
+        page_views: Default::default(),
         panel_names: analyzer.panel_names()?,
         metrics: Vec::new(),
         findings: Vec::new(),
@@ -402,7 +403,10 @@ fn run_batch_check(
                     continue;
                 }
                 source_pages += 1;
-                let review = !result.findings.is_empty() || !result.unresolved_sources.is_empty();
+                let review =
+                    result.findings.iter().any(|finding| {
+                        finding.kind != audit_checks::FindingKind::ExampleOpportunity
+                    }) || !result.unresolved_sources.is_empty();
                 if result.discrepancies.is_empty() && !review {
                     clean += 1;
                     println!("OK");
@@ -460,7 +464,7 @@ fn run_batch_check(
             }
             Ok(CheckPageOutcome::ExcludedSource { .. }) => {
                 excluded += 1;
-                println!("Skipped: Sandbox/TTT source");
+                println!("Skipped: intentionally excluded source or menu-only page");
             }
             Ok(CheckPageOutcome::NotFound) => {
                 let evidence = analyzer.missing_page_evidence(address)?;
@@ -473,9 +477,13 @@ fn run_batch_check(
             }
         }
     }
+    // check-list fetches its index lazily on the first page; capture views after
+    // checking so every batch command uses the same fresh-index priority data.
+    data.page_views = analyzer.wiki_client.page_views.clone();
     let review_pages = data
         .findings
         .iter()
+        .filter(|finding| finding.kind != audit_checks::FindingKind::ExampleOpportunity)
         .map(|finding| &finding.page)
         .collect::<std::collections::HashSet<_>>()
         .len();
@@ -483,6 +491,21 @@ fn run_batch_check(
         data.metrics
             .push((name.to_string(), count, description.to_string()))
     };
+    metric(
+        "Menu Source Files Excluded",
+        analyzer.menu_files_excluded,
+        "Menu directories and initialization files retained only as load evidence",
+    );
+    metric(
+        "Menu-only Symbols Excluded",
+        analyzer.menu_symbols_excluded,
+        "Indexed definitions intentionally excluded from coverage and routine checks",
+    );
+    metric(
+        "Metamethod Candidates Excluded",
+        analyzer.metamethod_candidates_excluded,
+        "Metamethod definitions do not require standalone documentation pages",
+    );
     metric(
         "Total Pages Checked",
         pages.len(),
@@ -531,7 +554,7 @@ fn run_batch_check(
     metric(
         "Excluded Source Pages",
         excluded,
-        "Sandbox and TTT source pages skipped",
+        "Sandbox, TTT, and menu-only source pages skipped",
     );
     metric(
         "Unresolved Source Pages",

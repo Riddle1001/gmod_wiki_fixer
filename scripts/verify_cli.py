@@ -76,6 +76,31 @@ local RegisterMetaTable = function() end
 RegisterMetaTable("PrivateMeta", Other)
 ''', encoding="utf-8")
 
+    entity = repo / "garrysmod/gamemodes/base/entities/entities/base_ai"
+    entity.mkdir(parents=True)
+    (entity / "schedules.lua").write_text("function ENT:DoingEngineSchedule() return self.bDoingEngineSchedule end\n", encoding="utf-8")
+    (entity / "ambiguous.lua").write_text("function ENT:Ambiguous() end\nfunction ENT:Ambiguous(x) end\n", encoding="utf-8")
+    foreign = repo / "garrysmod/gamemodes/other/entities/entities/foreign"
+    foreign.mkdir(parents=True)
+    (foreign / "schedules.lua").write_text("function ENT:DoingEngineSchedule(wrong, owner) end\n", encoding="utf-8")
+    weapons = repo / "garrysmod/gamemodes/base/entities/weapons/test"
+    weapons.mkdir(parents=True)
+    (weapons / "shared.lua").write_text("function SWEP:WeaponProbe() end\n", encoding="utf-8")
+    (lua / "menu").mkdir()
+    (lua / "menu/menu.lua").write_text('function MenuPathOnly() end\ninclude("outside_menu.lua")\n', encoding="utf-8")
+    (lua / "outside_menu.lua").write_text('function LoadedMenuOnly() end\n', encoding="utf-8")
+    (lua / "policy.lua").write_text('''if MENU_DLL then function MenuGuardOnly() end end
+if CLIENT then function SharedMenuProbe() end end
+function __call() end
+FixtureLibrary = {}
+function FixtureLibrary.__helper() end
+local META = {}
+RegisterMetaTable("FixtureClass", META)
+function META:__tostring() return "fixture" end
+function META:Ordinary() end
+function META:__add(other) return self end
+''', encoding="utf-8")
+
     def git(*arguments):
         result = run("git", ["git", "-c", "user.name=CLI Fixture", "-c", "user.email=fixture@example.invalid",
                              "-c", f"core.hooksPath={root / 'no-hooks'}", *arguments], repo)
@@ -108,13 +133,26 @@ RegisterMetaTable("PrivateMeta", Other)
         "Global.RealmProbe": page("Global.RealmProbe", "<function name='RealmProbe'><realm>Client</realm><file line='1'>lua/server/realm.lua</file></function>"),
     }
 
+    state["pages"].update({
+        "ENTITY:DoingEngineSchedule": page("ENTITY:DoingEngineSchedule", "<function name='DoingEngineSchedule' parent='ENTITY' type='hook'><realm>Server</realm><file line='1'>gamemodes/base/entities/entities/base_ai/schedules.lua</file><rets><ret type='boolean'/></rets></function>"),
+        "ENTITY:Ambiguous": page("ENTITY:Ambiguous", "<function name='Ambiguous' parent='ENTITY' type='hook'><file line='1'>gamemodes/base/entities/entities/base_ai/ambiguous.lua</file></function>"),
+        "ENTITY:Foreign": page("ENTITY:Foreign", "<function name='DoingEngineSchedule' parent='ENTITY' type='hook'><file line='1'>lua/probe.lua</file></function>"),
+        "WEAPON:WeaponProbe": page("WEAPON:WeaponProbe", "<function name='WeaponProbe' parent='WEAPON' type='hook'><file line='1'>gamemodes/base/entities/weapons/test/shared.lua</file></function>"),
+        "Global.MenuGuardOnly": page("Global.MenuGuardOnly", "<function name='MenuGuardOnly'><realm>Shared</realm><file line='1'>lua/policy.lua</file></function>"),
+        "Global.LoadedMenuOnly": page("Global.LoadedMenuOnly", "<function name='LoadedMenuOnly'><realm>Shared</realm><file line='1'>lua/outside_menu.lua</file></function>"),
+        "Global.NativeExampleProbe": page("Global.NativeExampleProbe", "<function name='NativeExampleProbe'><realm>Shared</realm></function>"),
+        "Global.ExamplePresent": page("Global.ExamplePresent", "<function name='ExamplePresent'><realm>Shared</realm></function><example><code>print('ok')</code></example>"),
+        "Global.FakeExample": page("Global.FakeExample", "<function name='FakeExample'><realm>Shared</realm></function><code><example>not markup</example></code>"),
+        "FixtureClass:__tostring": page("FixtureClass:__tostring", "<function name='__tostring' parent='FixtureClass' type='classfunc'><description><page>ConfirmedDeadTarget</page></description></function>"),
+    })
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             address = unquote(urlparse(self.path).path.removeprefix("/gmod/"))
             state["requests"].append(address)
             if address == "~pagelist":
                 status = state["index_status"]
-                body = [{"address": key, "updateCount": state["version"]} for key in state["pages"]]
+                body = [{"address": key, "updateCount": state["version"], "viewCount": 98765 if key == "Global.NativeExampleProbe" else 12} for key in state["pages"]]
             else:
                 body = state["pages"].get(address, 404)
                 status = body if isinstance(body, int) else 200
@@ -139,6 +177,36 @@ RegisterMetaTable("PrivateMeta", Other)
                           "--cache-dir", str(root / "cache"), *arguments])
 
     try:
+        feedback_pages = ["ENTITY:DoingEngineSchedule", "ENTITY:Ambiguous", "ENTITY:Foreign", "WEAPON:WeaponProbe", "Global.MenuGuardOnly", "Global.LoadedMenuOnly", "Global.NativeExampleProbe", "Global.ExamplePresent", "Global.FakeExample", "FixtureClass:__tostring"]
+        (root / "feedback-pages.txt").write_text("\n".join(feedback_pages), encoding="utf-8")
+        feedback = cli("feedback entry-point flow", "check-list", "feedback-pages.txt", "--output-report", "feedback.html")
+        feedback_html = (root / "feedback.html").read_text(encoding="utf-8")
+        from html.parser import HTMLParser
+        class FeedbackRows(HTMLParser):
+            def __init__(self): super().__init__(); self.current = None; self.rows = []; self.pages = []; self.address = None
+            def handle_starttag(self, tag, attrs):
+                if tag == "tr" and dict(attrs).get("data-category"): self.current = [dict(attrs)["data-category"], ""]; self.address = None
+                if tag == "a" and self.current is not None and self.address is None and "wiki.facepunch.com/gmod/" in dict(attrs).get("href", ""):
+                    self.address = unquote(dict(attrs)["href"].split("/gmod/", 1)[1])
+            def handle_data(self, data):
+                if self.current is not None: self.current[1] += data
+            def handle_endtag(self, tag):
+                if tag == "tr" and self.current is not None: self.rows.append(self.current); self.pages.append((self.current[0], self.address)); self.current = None
+        rows = FeedbackRows(); rows.feed(feedback_html)
+        check("page views come from current official-index contract", '"Global.NativeExampleProbe":"98765"' in feedback_html and 'Page views' in feedback_html)
+        check("tagged entity resolves without unrelated-owner signature", feedback.returncode == 0 and not any(name == "ENTITY:DoingEngineSchedule" for key, name in rows.pages))
+        check("ambiguous and foreign entity owners remain diagnostics", all(any(key == "unresolved" and name in text for key, text in rows.rows) for name in ["ENTITY:Ambiguous", "ENTITY:Foreign"]))
+        check("tagged weapon resolves", not any("WEAPON:WeaponProbe" in text and key == "unresolved" for key, text in rows.rows))
+        check("guarded and positively loaded menu definitions excluded", not any("MenuGuardOnly" in text or "LoadedMenuOnly" in text for key, text in rows.rows))
+        check("native and fake-code example gaps are opportunities", all(any(key == "examples" and name in text for key, text in rows.rows) for name in ["Global.NativeExampleProbe", "Global.FakeExample"]))
+        check("existing examples and hooks are not opportunities", not any(key == "examples" and any(name in text for name in ["Global.ExamplePresent", "ENTITY:DoingEngineSchedule", "FixtureClass:__tostring"]) for key, text in rows.rows))
+        check("existing metamethod page retains dead link checks", any(key == "broken-link" and "FixtureClass:__tostring" in text for key, text in rows.rows))
+        scan = cli("feedback discovery policy", "scan", "--output-report", "policy.html")
+        policy = (root / "policy.html").read_text(encoding="utf-8")
+        parsed_policy = FeedbackRows(); parsed_policy.feed(policy)
+        missing_text = " ".join(text for key, text in parsed_policy.rows if key == "missing")
+        check("menu-only and actual metamethod pages not discovered", all(name not in missing_text for name in ["MenuPathOnly", "MenuGuardOnly", "LoadedMenuOnly", "FixtureClass:__tostring", "FixtureClass:__add"]))
+        check("client-menu and ordinary double-underscore exports retained", all(name in missing_text for name in ["SharedMenuProbe", "Global.__call", "FixtureLibrary.__helper", "FixtureClass:Ordinary"]))
         (root / "meta-pages.txt").write_text("Color:Copy\n", encoding="utf-8")
         meta_result = cli("registered metatable source lookup", "check-list", "meta-pages.txt", "--output-report", "meta.html")
         meta_report = (root / "meta.html").read_text(encoding="utf-8")
@@ -183,26 +251,33 @@ RegisterMetaTable("PrivateMeta", Other)
               f"/blob/{revision}/garrysmod/lua/server/realm.lua#L1" in realm_report and
               f"/blob/{revision}/garrysmod/lua/client/realm.lua#L1" not in realm_report)
         source.write_text("\n\n\n\nfunction Probe() end\n", encoding="utf-8")
+        def audit_record(html):
+            import re
+            return re.sub(r'<time id="audit-completed"[^>]*>.*?</time>', '', html)
         (lua / "untracked.lua").write_bytes(b"\xff")
         result = cli("dirty snapshot", "check-list", "pages.txt", "--output-report", "dirty.html")
         dirty = (root / "dirty.html").read_text(encoding="utf-8") if (root / "dirty.html").exists() else ""
-        check("dirty and untracked files cannot change committed evidence", result.returncode == 0 and clean == dirty)
+        check("dirty and untracked files cannot change committed evidence", result.returncode == 0 and audit_record(clean) == audit_record(dirty))
         check("valid cache reused after fresh index", state["requests"].count("Global.Probe") == 1 and
               state["requests"].count("~pagelist") == index_requests_before_cache_flow + 3)
         state["version"] = 2
         state["pages"]["Global.Probe"]["markup"] = "<function name='Probe'><file line='1'>lua/probe.lua</file></function>"
-        result = cli("stale cache", "check", "Global.Probe")
+        result = cli("stale cache", "check-list", "pages.txt", "--output-report", "stale.html")
+        stale_rows = FeedbackRows(); stale_rows.feed((root / "stale.html").read_text(encoding="utf-8"))
         check("changed index refetches stale page", result.returncode == 0 and
-              "No discrepancies detected" in result.stdout and state["requests"].count("Global.Probe") == 2)
+              not any(key in ["line-ranges", "unresolved", "failed"] for key, text in stale_rows.rows) and state["requests"].count("Global.Probe") == 2)
         for address, title in [("Review:A", "Colon page"), ("Review_A", "Underscore page"),
                                ("Review:A", "Colon page"), ("Review_A", "Underscore page")]:
             result = cli("cache collision", "check", address)
             check(f"correct cache identity {address}", result.returncode == 0 and title in result.stdout)
         check("colliding legacy names each downloaded once", state["requests"].count("Review:A") == 1 and
               state["requests"].count("Review_A") == 1)
-        result = cli("case-sensitive page identity", "check", "Global.probe")
+        case_requests_before = state["requests"].count("Global.probe")
+        (root / "case.txt").write_text("Global.probe\n", encoding="utf-8")
+        result = cli("case-sensitive page identity", "check-list", "case.txt", "--output-report", "case.html")
+        case_rows = FeedbackRows(); case_rows.feed((root / "case.html").read_text(encoding="utf-8"))
         check("Windows cache preserves case-sensitive identity", result.returncode == 0 and
-              "No discrepancies detected" in result.stdout and state["requests"].count("Global.probe") == 1)
+              not any(key in ["line-ranges", "unresolved", "failed"] for key, text in case_rows.rows) and state["requests"].count("Global.probe") == case_requests_before + 1)
         second = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         second_thread = threading.Thread(target=second.serve_forever, daemon=True)
         second_thread.start()

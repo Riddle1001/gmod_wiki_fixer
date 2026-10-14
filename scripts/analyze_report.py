@@ -41,9 +41,13 @@ def main():
     parser.add_argument("--limit", type=int, default=15)
     args = parser.parse_args()
     report = Findings()
-    report.feed(args.report.read_text(encoding="utf-8"))
-    for row in sorted(report.rows, key=lambda row: int(row[0]), reverse=True)[:args.limit]:
-        print(f"Score {row[0]} | {row[1]}\n  Wiki: {row[2]}\n  Source: {row[3]}\n  {row[4]}")
+    html = args.report.read_text(encoding="utf-8")
+    report.feed(html)
+    label = "Page views" if "const pageViews =" in html else "Score"
+    def priority(row):
+        return int(row[0]) if row[0].isdigit() else -1
+    for row in sorted(report.rows, key=priority, reverse=True)[:args.limit]:
+        print(f"{label} {row[0]} | {row[1]}\n  Wiki: {row[2]}\n  Source: {row[3]}\n  {row[4]}")
 
 
 if __name__ == "__main__":

@@ -33,6 +33,9 @@ pub struct Analyzer {
     pub wiki_client: WikiClient,
     pub realm_checked: usize,
     pub realm_unresolved: usize,
+    pub menu_symbols_excluded: usize,
+    pub menu_files_excluded: usize,
+    pub metamethod_candidates_excluded: usize,
     file_cache: HashMap<PathBuf, FileIndex>,
     repo_symbols_indexed: bool,
     /// Map of lowercase symbol query -> Vec<(file_path, SymbolDefinition)>
@@ -54,6 +57,9 @@ impl Analyzer {
             wiki_client,
             realm_checked: 0,
             realm_unresolved: 0,
+            menu_symbols_excluded: 0,
+            menu_files_excluded: 0,
+            metamethod_candidates_excluded: 0,
             file_cache: HashMap::new(),
             repo_symbols_indexed: false,
             repo_symbol_map: HashMap::new(),
@@ -78,6 +84,15 @@ impl Analyzer {
         analyzer.pinned = true;
         for (path, bytes) in sources {
             if !source_is_included(&path) {
+                // Keep menu load roots as evidence for helpers outside menu directories.
+                // They are not documentation candidates or source-check inputs.
+                if menu_source_path(&path) {
+                    analyzer.menu_files_excluded += 1;
+                    let source = String::from_utf8(bytes).map_err(|error| {
+                        format!("Cannot read menu load evidence {path}: {error}")
+                    })?;
+                    analyzer.source_texts.insert(path, source);
+                }
                 continue;
             }
             let source = String::from_utf8(bytes)
@@ -132,6 +147,8 @@ impl Analyzer {
             }
         }
         self.repo_symbol_map.clear();
+        self.menu_symbols_excluded = 0;
+        self.load_graph = LoadGraph::build(&self.source_texts);
         self.class_bases.clear();
         self.registered_controls.clear();
         let mut indexes: Vec<_> = self.file_cache.values().collect();
@@ -152,6 +169,10 @@ impl Analyzer {
             let rel_path = index.relative_path.clone();
 
             for def in index.definitions.iter().cloned() {
+                if self.menu_only_definition(&rel_path, &def) {
+                    self.menu_symbols_excluded += 1;
+                    continue;
+                }
                 let full_lower = def.full_name.to_lowercase();
                 self.repo_symbol_map
                     .entry(full_lower)
@@ -176,9 +197,27 @@ impl Analyzer {
             }
         }
 
-        self.load_graph = LoadGraph::build(&self.source_texts);
+        self.metamethod_candidates_excluded = self
+            .repo_symbol_map
+            .values()
+            .flatten()
+            .filter(|(_, def)| {
+                is_metamethod(def.parent.as_deref(), &def.base_name) && def.full_name.contains(':')
+            })
+            .map(|(file, def)| (file, def.source_start_offset))
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         self.repo_symbols_indexed = true;
         Ok(())
+    }
+
+    // This policy owns menu classification across discovery, source and contract checks.
+    // Explicit game-realm evidence outranks a menu-only observed load trace: static
+    // tracing cannot prove the absence of other load paths. Revisit if menu modding
+    // becomes supported, or a complete runtime load model replaces static evidence.
+    fn menu_only_definition(&self, file: &str, def: &SymbolDefinition) -> bool {
+        def.realm == Realm::Menu
+            || (def.realm == Realm::Unknown && self.load_graph.symbol_realms(file, def) == 4)
     }
 
     /// Searches the repository for a symbol across all indexed Lua files, with optional realm preference.
@@ -380,8 +419,34 @@ impl Analyzer {
         if !all_tags.is_empty() && tags.is_empty() {
             return Ok(CheckPageOutcome::ExcludedSource { title: page.title });
         }
-        let findings = self.audit_page_metadata(&page)?;
         let (page_realm, page_raw_realm) = DiffEngine::extract_realm(&page.markup);
+        if page_realm == Some(Realm::Menu) {
+            return Ok(CheckPageOutcome::ExcludedSource { title: page.title });
+        }
+        if !tags.is_empty()
+            && tags.iter().all(|tag| {
+                self.file_cache
+                    .values()
+                    .find(|index| {
+                        index.relative_path == tag.file_path.trim_start_matches("garrysmod/")
+                    })
+                    .and_then(|index| {
+                        index
+                            .find_symbol_with_realm(
+                                tag.func_name.as_deref().unwrap_or(&page.title),
+                                tag.func_parent.as_deref(),
+                                None,
+                            )
+                            .map(|def| (index, def))
+                    })
+                    .is_some_and(|(index, def)| {
+                        self.menu_only_definition(&index.relative_path, def)
+                    })
+            })
+        {
+            return Ok(CheckPageOutcome::ExcludedSource { title: page.title });
+        }
+        let findings = self.audit_page_metadata(&page)?;
         let mut discrepancies = Vec::new();
         let mut unresolved_sources = Vec::new();
 
@@ -440,8 +505,9 @@ impl Analyzer {
 
                 if let Some(local_path) = local_path_opt {
                     let index = self.get_or_parse_file(&local_path)?.clone();
-                    let symbol_def =
-                        index.find_symbol_with_realm(func_name, func_parent, effective_realm);
+                    let symbol_def = index
+                        .find_symbol_with_realm(func_name, func_parent, effective_realm)
+                        .filter(|def| !self.menu_only_definition(&index.relative_path, def));
 
                     if let Some(def) = symbol_def {
                         if is_line_attr_different(&tag.current_line_attr, &def) {
@@ -495,8 +561,11 @@ impl Analyzer {
                             );
                         } else {
                             unresolved_sources.push(format!(
-                                "Could not resolve `{}` (parent: {:?}) in `{}` or the scoped repository index; source left unchanged",
-                                func_name, func_parent, tag.file_path
+                                "Could not match {}{}{} in {}. Same-name candidates in that file: {}. Parent ownership or ambiguity prevented a confident match; repository fallback found no matching public identity.",
+                                func_parent.unwrap_or("Global"), ":", func_name, tag.file_path,
+                                index.definitions.iter().filter(|def| def.base_name == func_name)
+                                    .map(|def| format!("{} at {} ({})", def.full_name, def.wiki_line_attr, def.realm))
+                                    .collect::<Vec<_>>().join(", ")
                             ));
                         }
                     }
@@ -599,6 +668,24 @@ impl Analyzer {
                 candidates = in_files;
             }
         }
+        if candidates.is_empty() {
+            for file in files {
+                let normalized = file.replace('\\', "/");
+                let normalized = normalized.trim_start_matches("garrysmod/");
+                if let Some(index) = self
+                    .file_cache
+                    .values()
+                    .find(|index| index.relative_path == normalized)
+                {
+                    if let Some(def) = index.find_symbol_with_realm(&name, parent.as_deref(), realm)
+                    {
+                        if !self.menu_only_definition(normalized, def) {
+                            candidates.push((index.relative_path.clone(), def.clone()));
+                        }
+                    }
+                }
+            }
+        }
         candidates
     }
 
@@ -662,6 +749,29 @@ impl Analyzer {
             findings.push(finding);
         }
         let functions = crate::wiki_markup::blocks(&page.markup, "function");
+        if !functions.is_empty()
+            && crate::wiki_markup::blocks(&page.markup, "example").is_empty()
+            && functions.iter().any(|function| {
+                let name = function
+                    .tag
+                    .attrs
+                    .get("name")
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let parent = function.tag.attrs.get("parent").map(String::as_str);
+                !name.is_empty()
+                    && !is_metamethod(parent, name)
+                    && function
+                        .tag
+                        .attrs
+                        .get("type")
+                        .is_none_or(|kind| kind != "hook")
+                    && DiffEngine::extract_realm(&function.inner).0 != Some(Realm::Menu)
+            })
+        {
+            findings.push(AuditFinding::new(FindingKind::ExampleOpportunity, &page.address,
+                "No example block is present. Consider a short snippet with its execution realm, setup, expected output, and cleanup; this is a contribution opportunity, not a documentation error.".into()));
+        }
         for function in &functions {
             let Some(name) = function
                 .tag
@@ -812,7 +922,7 @@ impl Analyzer {
                     Realm::Menu => 4,
                     Realm::ClientAndMenu => 6,
                 };
-                if observed & !declared != 0 {
+                if observed & !declared & 3 != 0 {
                     let mut finding = AuditFinding::new(
                         FindingKind::LoadRealmConflict,
                         &page.address,
@@ -890,6 +1000,9 @@ impl Analyzer {
             self.realm_unresolved += 1;
             return;
         }
+        if def.realm == Realm::Menu {
+            return;
+        }
         self.realm_checked += 1;
         match (wiki_realm, raw_realm) {
             (None, None) => {
@@ -936,6 +1049,10 @@ impl Analyzer {
             .repo_symbol_map
             .values()
             .flatten()
+            .filter(|(_, def)| {
+                !(is_metamethod(def.parent.as_deref(), &def.base_name)
+                    && def.full_name.contains(':'))
+            })
             .filter_map(|(_, def)| match def.parent.as_deref() {
                 Some("ENT" | "SWEP") => None, // per-script prototypes, not named wiki classes
                 Some("_G") | None => Some(format!("Global.{}", def.base_name)),
@@ -1061,6 +1178,34 @@ fn documented_address(
         && (exists(&format!("PANEL:{}", method)) || exists(&format!("Panel:{}", method)))
 }
 
+pub(crate) fn is_metamethod(parent: Option<&str>, name: &str) -> bool {
+    parent.is_some_and(|parent| !matches!(parent, "Global" | "_G"))
+        && matches!(
+            name,
+            "__index"
+                | "__newindex"
+                | "__call"
+                | "__tostring"
+                | "__add"
+                | "__sub"
+                | "__mul"
+                | "__div"
+                | "__mod"
+                | "__pow"
+                | "__unm"
+                | "__concat"
+                | "__len"
+                | "__eq"
+                | "__lt"
+                | "__le"
+                | "__gc"
+                | "__mode"
+                | "__metatable"
+                | "__pairs"
+                | "__ipairs"
+        )
+}
+
 fn is_static_page_address(address: &str) -> bool {
     address.split(['.', ':']).all(|part| {
         let mut chars = part.chars();
@@ -1071,10 +1216,27 @@ fn is_static_page_address(address: &str) -> bool {
     })
 }
 
+fn menu_source_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    let normalized = normalized
+        .trim_start_matches('/')
+        .trim_start_matches("./")
+        .trim_start_matches("garrysmod/");
+    normalized == "lua/menu"
+        || normalized.starts_with("lua/menu/")
+        || matches!(
+            normalized,
+            "lua/includes/menu.lua" | "lua/includes/init_menu.lua"
+        )
+}
+
 pub(crate) fn source_is_included(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_lowercase();
     let normalized = normalized.trim_start_matches('/').trim_start_matches("./");
     let normalized = normalized.strip_prefix("garrysmod/").unwrap_or(normalized);
+    if menu_source_path(path) {
+        return false;
+    }
     let mut components = normalized.split('/');
     !(components.next() == Some("gamemodes")
         && matches!(components.next(), Some("sandbox" | "terrortown" | "ttt")))

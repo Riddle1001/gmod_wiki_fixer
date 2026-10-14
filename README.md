@@ -37,7 +37,7 @@ cargo run -- --pull audit
 
 Batch commands default to `audit_report.html`. Open the file directly in any browser; styles and scripts are embedded, with no server or external assets required.
 
-The report opens to one review list with expandable findings. Search across all page names, symbols, source paths, and finding text; narrow by category; sort by priority, page, or category. Results are paged in groups of 50. Each expanded finding keeps its original explanation, wiki/source comparison where available, and commit-pinned evidence links. Press `/` to focus search. Search remains active when changing categories; **Clear filters** returns to all findings.
+The report opens to **Fixes**, a focused queue of broken links, invalid source paths, and concrete API discrepancies. **Source maintenance** keeps exact line accuracy, replacement paths, and missing source/realm tags easy to reach. **Documentation opportunities** contains missing-page candidates and optional example contributions; **Audit diagnostics** contains unresolved definitions, unverified links, failed checks, and static load-path review. **All findings** retains the complete record. Findings are grouped into one expandable card per wiki page. Search across all page names, symbols, source paths, and finding text; narrow by category; sort by page views (highest first), page name, or category. Page views come from the fresh official `~pagelist` index, are shown on page cards, and are separate from wiki update counts. Missing or unindexed pages have unavailable views and sort after known counts. Results are paged in groups of 50 pages, with both page and finding counts shown. View, search, sort, and scope filters are retained in shareable URLs. Each expanded finding keeps its original explanation, wiki/source comparison where available, and commit-pinned evidence links. Press `/` to focus search. Search remains active when changing categories; **Clear filters** returns to Fixes.
 
 A separate **Coverage & methodology** view retains every metric, scope restriction, and interpretation limit. Missing pages, source and realm discrepancies, metadata checks, unverified links, unresolved sources, and failed checks remain distinct categories. The mobile layout uses a category selector and stacked comparisons. Without JavaScript, all findings remain readable as tables. Printing includes the full report, not just the current page of findings.
 
@@ -58,7 +58,7 @@ The renderer's HTML tables remain the complete record for no-JavaScript reading,
 
 Discovery and source verification use the same lexical, scope-aware symbol index. Locals, function parameters, private tables and helpers, instance callbacks such as `Button.OnDrop`, ordinary data fields such as `AimAng.p`, and unresolved dynamic exports are excluded. Public exports of local functions or tables retain their public names. Registered controls, canonical metatables, inherited methods, and generic `PANEL` hooks are considered when checking existing documentation.
 
-Only `gamemodes/sandbox`, `gamemodes/terrortown`, and `gamemodes/ttt` are excluded. The base gamemode and other Lua folders remain included. Pages whose source tags exclusively refer to excluded files are counted as skipped.
+`gamemodes/sandbox`, `gamemodes/terrortown`, and `gamemodes/ttt` are excluded, along with `lua/menu/`, `lua/includes/menu.lua`, and `lua/includes/init_menu.lua`. Menu roots remain available to the static load graph so helpers outside those directories can be classified. Definitions guarded for Menu, and otherwise unknown definitions positively traced only from Menu, are excluded from routine coverage. Explicit client/server availability is retained even when the only observed load trace is Menu; static tracing cannot establish that other routes do not exist. The base gamemode and other Lua folders remain included. Pages whose source tags exclusively refer to excluded files are counted as skipped.
 
 Direct realm discrepancies require incompatible source and wiki availability. Positive load traces can expose additional realm availability, but cannot prove runtime behavior or the absence of other load paths; these appear as review findings. The engine model follows the official [Lua loading order](https://wiki.facepunch.com/gmod/Lua_Loading_Order), [States / Realms](https://wiki.facepunch.com/gmod/States), and [Global Variables](https://wiki.facepunch.com/gmod/Global_Variables) documentation.
 
@@ -111,7 +111,7 @@ python scripts/qa_report.py .cache/report-fixtures/empty.html
 
 GitHub may delay scheduled runs during high load. The 17-minute offset avoids scheduling exactly on the hour.
 
-The report also shows the visitor's live local time, the next scheduled refresh in local time and UTC, and a countdown. These display the schedule defined in the workflow; GitHub may start a scheduled run late, and the report changes after that run completes successfully.
+The report shows the time the audit completed and its source revision, separately from the refresh schedule. An expandable schedule summary shows the next refresh while keeping the full clocks and countdown available. It also shows the visitor's live local time, the next scheduled refresh in local time and UTC, and a countdown. These display the schedule defined in the workflow; GitHub may start a scheduled run late, and the report changes after that run completes successfully.
 
 ## Published report
 
@@ -124,3 +124,15 @@ Named `vgui.Register` and `derma.DefineControl` calls also supply control overvi
 **Hide base gamemode findings** uses `gamemodes/base/` source paths across every category. It combines with the VGUI filter; Clear filters resets both.
 
 Metatable source matching recognizes `RegisterMetaTable("PublicName", localTable)` alongside `FindMetaTable`. This preserves canonical names such as `Color:Copy` even when source methods use a private local name (`COLOR`); shadowed registration calls remain private.
+
+## Feedback-driven scope and review policy
+
+Known metamethods on indexed class/metatable exports do not generate standalone missing-page candidates. Existing pages still receive meaningful checks such as broken wiki references. Ordinary double-underscore functions and library helpers remain eligible. Exclusion counts are recorded in methodology; documentation opportunities do not make a source page incorrect.
+
+Existing ENTITY and WEAPON pages can match ENT and SWEP definitions only in the explicitly tagged entity or weapon source file, with a single matching prototype definition. Repository-wide fallback does not equate those parents. Source-range and contract checks use the same contextual identity. Revisit this boundary if one wiki page must resolve inherited implementations across multiple entity/weapon owners; that needs explicit inheritance evidence rather than a global alias.
+
+Example opportunities use actual `<example>` markup outside verbatim code. They include documented native functions, exclude hooks, metamethods, and menu-only pages, and suggest a snippet's realm, setup, expected output, and cleanup. They are optional contributions, never documentation errors. This change creates the queue; snippets are not generated or published automatically.
+
+View membership is local to the HTML renderer's browser enhancement because it classifies the existing complete report record. Revisit if another presentation consumer needs the same view rules. The views and scope policy implement the maintainer feedback in this engagement; their usefulness has not yet been established by longer-term project history.
+
+The CLI harness exercises contextual entity/weapon matching, ambiguous and foreign owners, menu paths/guards/load roots, retained client/menu APIs, metamethod discovery, and native/example markup cases. Browser checks cover focused views, grouping without lost findings, filters, URL restoration, mobile interactions, and complete no-JavaScript output. Accepted test sockets are made blocking explicitly on Windows before reading HTTP headers; the listener stays nonblocking to enforce the fixture's accept deadline.
