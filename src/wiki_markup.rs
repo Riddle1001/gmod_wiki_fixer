@@ -51,15 +51,34 @@ pub fn decode_uri_path(text: &str) -> String {
 }
 
 pub fn tags(markup: &str) -> Vec<Tag> {
+    scan_markup(markup, false).0
+}
+
+/// Verbatim code/pre blocks and fenced code, excluding comments and inline text.
+pub fn code_blocks(markup: &str) -> Vec<String> {
+    scan_markup(markup, true).1
+}
+
+// Metadata and example scoring share lexical boundaries: quoted/commented tags
+// must not become real examples, and code must not become wiki metadata.
+// Revisit if a different markup dialect needs different verbatim boundaries.
+fn scan_markup(markup: &str, capture_code: bool) -> (Vec<Tag>, Vec<String>) {
     let bytes = markup.as_bytes();
     let mut position = 0;
     let mut result = Vec::new();
+    let mut code = Vec::new();
     while position < bytes.len() {
         if markup[position..].starts_with("```") {
             position += 3;
-            position = markup[position..]
-                .find("```")
-                .map_or(bytes.len(), |end| position + end + 3);
+            if let Some(end) = markup[position..].find("```") {
+                let fenced = &markup[position..position + end];
+                if let Some((_, body)) = fenced.split_once('\n').filter(|_| capture_code) {
+                    code.push(body.into());
+                }
+                position += end + 3;
+            } else {
+                position = bytes.len();
+            }
             continue;
         }
         if markup[position..].starts_with("<!--") {
@@ -129,17 +148,21 @@ pub fn tags(markup: &str) -> Vec<Tag> {
             closing,
             self_closing: raw.trim_end().ends_with('/'),
         };
-        if !closing && matches!(name.as_str(), "code" | "output" | "pre") {
+        if !closing && !tag.self_closing && matches!(name.as_str(), "code" | "output" | "pre") {
             let close = format!("</{}>", name);
-            position = markup[position..]
-                .to_ascii_lowercase()
-                .find(&close)
-                .map_or(bytes.len(), |end| position + end + close.len());
+            if let Some(end) = markup[position..].to_ascii_lowercase().find(&close) {
+                if capture_code && name != "output" {
+                    code.push(markup[position..position + end].into());
+                }
+                position += end + close.len();
+            } else {
+                position = bytes.len();
+            }
             continue;
         }
         result.push(tag);
     }
-    result
+    (result, code)
 }
 
 pub fn blocks(markup: &str, name: &str) -> Vec<Block> {

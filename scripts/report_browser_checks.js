@@ -87,9 +87,6 @@
     check('selection shows evidence and edit action', row.getAttribute('aria-current') === 'true' && $('finding-detail').querySelector('.btn-primary')?.href.endsWith('~edit'));
     check('selection has shareable URL', new URL(location.href).searchParams.has('finding'));
     check('confidence on every finding row', [...document.querySelectorAll('.finding-row')].every(row => row.querySelector('.badge')));
-    const review = $('finding-detail').querySelector('.review-button'); review.click(); await wait();
-    check('review toggles visibly and persists', $('finding-detail').querySelector('.review-button').getAttribute('aria-pressed') === 'true' && JSON.parse(localStorage.getItem('gmod-reviewed-v1')).includes(row.dataset.id));
-    $('finding-detail').querySelector('.review-button').click();
     const currentId = document.querySelector('.finding-row[aria-current]')?.dataset.id;
     document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'j',bubbles:true})); await wait();
     check('j selects next finding', document.querySelectorAll('.finding-row').length < 2 || document.querySelector('.finding-row[aria-current]')?.dataset.id !== currentId);

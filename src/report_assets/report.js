@@ -231,11 +231,6 @@
   // Revisit if findings gain stable IDs from an upstream audit store.
   const findingId = entry => encodeURIComponent(entry.key + '/' + entry.page + '/' + entry.reason);
   let selected = null;
-  let reviewed = new Set();
-  let storageAvailable = true;
-  try { const saved = JSON.parse(localStorage.getItem('gmod-reviewed-v1') || '[]');
-    if (Array.isArray(saved)) reviewed = new Set(saved.filter(x => typeof x === 'string'));
-  } catch { storageAvailable = false; }
   const confidence = e => ['failed','unresolved','unverified-link','load-realm'].includes(e.key) ? 'Inconclusive' :
     ['signature','returns','missing','missing-controls','examples','documentation-quality','doc-critical','identity'].includes(e.key) ? 'Likely' : 'Confirmed';
   const badge = e => { const node = create('span', 'badge badge-' + confidence(e).toLowerCase(), e.quality !== null ? 'Heuristic' : confidence(e)); node.title = e.quality !== null ? 'Visible documentation coverage, not a judgment of correctness or writing quality.' : confidence(e) === 'Confirmed' ? 'Definite result within the static check’s stated scope; runtime behavior is not established.' : confidence(e) === 'Likely' ? 'Review the documented contract and context before editing.' : 'Evidence is incomplete or static reachability needs review.'; return node; };
@@ -301,15 +296,10 @@
       } else link.parentElement.append(create('p', 'muted', 'Code excerpt unavailable in this report. Open the pinned source to inspect it.'));
     }
     const action = pane.querySelector('.wiki-action'); if (action) action.textContent = 'View wiki page';
-    const review = create('button', 'review-button', reviewed.has(findingId(entry)) ? 'Reviewed — undo' : 'Mark reviewed');
-    review.type = 'button'; review.setAttribute('aria-pressed', String(reviewed.has(findingId(entry))));
-    review.onclick = () => {
-      const id = findingId(entry); if (reviewed.has(id)) reviewed.delete(id); else reviewed.add(id);
-      try { localStorage.setItem('gmod-reviewed-v1', JSON.stringify([...reviewed])); } catch { storageAvailable = false; }
-      showFinding(entry, false); const row = [...document.querySelectorAll('.finding-row')].find(r => r.dataset.id === id); if(row) row.classList.toggle('reviewed', reviewed.has(id));
-    };
     pane.querySelectorAll('.evidence a').forEach(link => { const label = create('span','source-link-label','View pinned source on GitHub ↗'); link.append(label); });
-    pane.append(review, create('p', 'muted review-note', storageAvailable ? 'Review status is saved only in this browser. j / k: next / previous · /: search · e: edit' : 'Browser storage unavailable. Review status lasts for this session.'));
+    pane.append(create('p', 'muted keyboard-note', 'j / k: next / previous · /: search · e: edit'));
+    pane.querySelectorAll('.evidence a').forEach(link => { const label = create('span','source-link-label','View pinned source on GitHub ↗'); link.append(label); });
+    pane.append(create('p', 'muted keyboard-note', 'j / k: next / previous · /: search · e: edit'));
     if (updateUrl) { const params = new URLSearchParams(location.search); params.set('finding', findingId(entry)); history.replaceState(null, '', location.pathname + '?' + params + location.hash); }
   }
   function pageCard(items) {
@@ -317,7 +307,6 @@
     for (const entry of items) {
       const row = create('a', 'finding-row'); row.href = '?' + new URLSearchParams({finding:findingId(entry)}) + '#' + active;
       row.dataset.id = findingId(entry); row.dataset.entry = entry.index;
-      row.classList.toggle('reviewed', reviewed.has(findingId(entry)));
       const main = create('div', 'row-main'); main.append(create('code', 'sym', entry.page), create('span', 'row-problem', problemLabel(entry)));
       const meta = create('div', 'row-meta'); meta.append(create('span', 'tag', labels.get(entry.key)), badge(entry), create('span', 'views', entry.views === null ? '—' : new Intl.NumberFormat(undefined, {notation:'compact', maximumFractionDigits:1}).format(entry.views)));
       if (entry.quality !== null) meta.prepend(create('span', 'tag', `Quality ${entry.quality}/100`), create('span', 'tag', `Priority ${qualityPriority(entry).toFixed(1)}`));
@@ -406,6 +395,7 @@
     if (!selected && requested) { const groupIndex = pageGroups.findIndex(items => items.some(e => findingId(e) === requested)); if (groupIndex >= 0) page = Math.floor(groupIndex / pageSize); }
     page = Math.min(page, Math.max(0, Math.ceil(pageGroups.length / pageSize) - 1));
     const from = page * pageSize;
+    if (!$('keyboard-help')) { const help = create('p','muted keyboard-help','Keyboard: j / k select · / search · e edit'); help.id = 'keyboard-help'; document.querySelector('.queue-tools')?.after(help); }
     $('finding-list').replaceChildren(...pageGroups.slice(from, from + pageSize).map(pageCard));
     const targetId = new URLSearchParams(location.search).get('finding');
     const target = filtered.find(e => findingId(e) === targetId) || filtered.find(e => selected && findingId(e) === findingId(selected)) || filtered[0];
